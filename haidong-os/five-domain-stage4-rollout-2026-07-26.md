@@ -24,6 +24,7 @@ tags: [haidong-os, five-domain, daily-report, learning-bridge]
 - daily reliability runner 已按固定顺序接入：认知维护 → 经验候选编译 → 五域日报 → 项目低影响提案编译；之后才执行 3 个可选 Gbrain 索引步骤。
 - 新增 `automation/project_change_compiler.py`：只把当日已验证、明确归属已注册项目的事实编译为低影响 Project Registry 提案（`last_fact_id`、`last_reviewed_at`），不自动应用高影响字段。
 - 新增经验候选人工复核状态：候选事件保持不可变，复核决定追加到 `experience-review/reviews/YYYY-MM.jsonl`，支持 `accept/reject/defer`、复核人、理由和可复用性；`accept + reusable` 只生成 `cass_recommendation`，不写 CASS、不自动晋升。
+- 新增经验治理只读报告 `experience_review.py governance`：按 project-independent `pattern_key` 聚合候选，输出 `occurrence_count` / `distinct_projects` / `distinct_agents` / `distinct_days` / `latest_review`（按真实时间跨时区比较）；只有 latest_review 为 accept+reusable 且跨项目重复（默认 occurrence≥2、projects≥2）时 `recommended_for_cass_review=true`；报告不写入任何文件，恒为 `cass_write: false` / `auto_promote: false`，inbox 有坏行或篡改时 fail-closed（退出 1，不聚合）。
 
 ## 不变量
 
@@ -35,7 +36,7 @@ tags: [haidong-os, five-domain, daily-report, learning-bridge]
 
 ## 验收证据
 
-- 五域日报专项 8 项、经验队列专项 24 项；完整自动化测试 122 项通过。
+- 五域日报专项 8 项、经验队列专项 35 项；完整自动化测试 137 项通过。
 - 首份当日 canary：[2026-07-26 五域日报](reports/five-domain-daily/2026-07-26-五域日报.md)。
 - canary 最新重建汇总：正式事实 8、项目变化 7、知识候选 1、知识调用 16、知识缺口 9、证据 21、经验候选 1。
 - 数据问题 0，秘密脱敏 0，未发生自动晋升。

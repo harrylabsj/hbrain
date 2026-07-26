@@ -30,7 +30,8 @@ Dependencies: Python 3 stdlib + zsh only.
 | `tests/test_five_domain_daily.py` | Five-domain summary, date filtering, caps, bad-JSON issues, redaction, no-write, and symlink tests. |
 | `experience_review.py` | Stage-4 slice 2: compiles receipt `experience_candidate` entries into an append-only review inbox (`compile`/`validate` only; deterministic ids, within-batch and cross-month dedup, fail-closed on bad JSON or secret-like candidates; never copies action/result/query, never writes CASS). |
 | `experience_review.py review` | Human-driven append-only review record (`accept`/`reject`/`defer`) under `experience-review/reviews/`; candidate events remain immutable and `cass_write`/`auto_promote` stay false. |
-| `tests/test_experience_review.py` | Date filter, no action/result leak, idempotency, concurrency, cross-month dedup, bad-JSON/secret fail-closed, symlink refusal, dry-run, and validate tests. |
+| `experience_review.py governance` | Read-only cross-task reuse report: groups candidates by project-independent `pattern_key`, recommends a pattern for human CASS review only when the latest review is `accept`+`reusable` and it repeats across projects; writes nothing and always reports `cass_write`/`auto_promote` false. |
+| `tests/test_experience_review.py` | Date filter, no action/result leak, idempotency, concurrency, cross-month dedup, bad-JSON/secret fail-closed, symlink refusal, dry-run, validate, human-review, and governance tests. |
 
 ## Five-domain stage 3
 
@@ -180,6 +181,23 @@ Review records are append-only, idempotent, reference an existing candidate,
 and never write CASS or mutate the candidate. `accept + reusable` only sets a
 review-time `cass_recommendation`; a separate human-approved promotion process
 would still be required.
+
+Cross-task reuse evidence is a read-only report, never a write path:
+
+```sh
+python3 experience_review.py --inbox-root <experience-review> governance --json
+```
+
+`governance` validates the candidate inbox and review records first (exit 1
+when invalid, with no aggregation), then groups candidates by the
+project-independent `pattern_key` and reports `occurrence_count`,
+`distinct_projects`, `distinct_agents`, `distinct_days` and the pattern-level
+`latest_review` (chosen by real time across RFC3339 offsets).
+`recommended_for_cass_review` is true only when the latest review is
+`accept`+`reusable` AND `occurrence_count >= --min-occurrences` (default 2)
+AND `distinct_projects >= --min-projects` (default 2). The report writes
+nothing and always carries `cass_write: false` / `auto_promote: false`; a
+recommendation is a queue for human CASS review, not a promotion.
 
 ## Running the tests
 

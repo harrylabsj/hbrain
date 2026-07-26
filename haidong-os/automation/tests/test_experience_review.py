@@ -442,5 +442,151 @@ class ExperienceReviewTests(unittest.TestCase):
         self.assertIn("cass_write must be false", json.dumps(result["issues"]))
 
 
+    # -- governance report --------------------------------------------------
+
+    def _compile_cross_project_pattern(self):
+        """Same candidate from two projects on two days by two agents."""
+        candidate = {"summary": "跨任务复用的日期过滤经验", "kind": "playbook"}
+        self.write_receipts([
+            make_receipt("receipt_" + "a" * 24,
+                         completed_at="2026-07-24T10:00:00+08:00",
+                         project_id="proj-a", agent="claude",
+                         candidates=[candidate]),
+            make_receipt("receipt_" + "b" * 24,
+                         completed_at="2026-07-25T11:00:00+08:00",
+                         project_id="proj-b", agent="kimi",
+                         candidates=[candidate]),
+        ])
+        self.compile(dt.date(2026, 7, 24))
+        self.compile(DAY)
+        return candidate
+
+    def test_governance_aggregates_pattern_across_projects(self):
+        candidate = self._compile_cross_project_pattern()
+        result = er.governance_report(self.inbox_root)
+        self.assertTrue(result["valid"])
+        self.assertEqual(result["command"], "governance")
+        self.assertIs(result["cass_write"], False)
+        self.assertIs(result["auto_promote"], False)
+        self.assertEqual(result["event_count"], 2)
+        self.assertEqual(result["pattern_count"], 1)
+        (pattern,) = result["patterns"]
+        self.assertEqual(pattern["pattern_key"], er.pattern_key(candidate))
+        self.assertEqual(pattern["occurrence_count"], 2)
+        self.assertEqual(pattern["distinct_projects"], 2)
+        self.assertEqual(pattern["distinct_agents"], 2)
+        self.assertEqual(pattern["distinct_days"], 2)
+        self.assertIsNone(pattern["latest_review"])
+        self.assertIs(pattern["recommended_for_cass_review"], False,
+                      "no review yet => never recommended")
+        self.assertEqual(result["recommendations"], [])
+        self.assertIs(pattern["cass_write"], False)
+        self.assertIs(pattern["auto_promote"], False)
+
+    def test_governance_recommends_only_accept_reusable_latest_review(self):
+        self._compile_cross_project_pattern()
+        events = self.all_events()
+        # Review ONE occurrence; the recommendation is pattern-level.
+        er.record_review(self.inbox_root, events[0]["event_id"], "accept",
+                         "owner", "跨项目复用确认", True,
+                         reviewed_at="2026-07-26T08:00:00+00:00")
+        result = er.governance_report(self.inbox_root)
+        self.assertTrue(result["valid"])
+        (pattern,) = result["patterns"]
+        self.assertIs(pattern["recommended_for_cass_review"], True)
+        self.assertEqual(pattern["latest_review"]["decision"], "accept")
+        self.assertTrue(pattern["latest_review"]["reusable"])
+        self.assertEqual(len(result["recommendations"]), 1)
+        rec = result["recommendations"][0]
+        self.assertEqual(rec["recommendation"], "human_review_for_cass_promotion")
+        self.assertIs(rec["cass_write"], False)
+        self.assertIs(rec["auto_promote"], False)
+        # accept but NOT reusable => no recommendation
+        inbox2 = self.dir / "review-not-reusable"
+        er.compile_day(self.receipts_root, inbox2, dt.date(2026, 7, 24))
+        er.compile_day(self.receipts_root, inbox2, DAY)
+        ev2 = [json.loads(l) for p in er.iter_event_files(inbox2)
+               for l in p.read_text(encoding="utf-8").splitlines() if l.strip()]
+        er.record_review(inbox2, ev2[0]["event_id"], "accept", "owner",
+                         "仅本项目适用", False,
+                         reviewed_at="2026-07-26T08:00:00+00:00")
+        result2 = er.governance_report(inbox2)
+        self.assertIs(result2["patterns"][0]["recommended_for_cass_review"], False)
+
+    def test_governance_latest_reject_withdraws_recommendation(self):
+        self._compile_cross_project_pattern()
+        events = self.all_events()
+        er.record_review(self.inbox_root, events[0]["event_id"], "accept",
+                         "owner", "先认可", True,
+                         reviewed_at="2026-07-26T08:00:00+00:00")
+        er.record_review(self.inbox_root, events[1]["event_id"], "reject",
+                         "owner", "后发现不可迁移", False,
+                         reviewed_at="2026-07-26T09:00:00+00:00")
+        result = er.governance_report(self.inbox_root)
+        (pattern,) = result["patterns"]
+        self.assertEqual(pattern["latest_review"]["decision"], "reject")
+        self.assertIs(pattern["recommended_for_cass_review"], False)
+        self.assertEqual(result["recommendations"], [])
+
+    def test_governance_latest_review_compares_real_time_across_offsets(self):
+        # "+08:00" sorts lexicographically AFTER "+00:00"; a naive string max
+        # would pick the WRONG review as latest. 09:00+08:00 (=01:00Z) is
+        # EARLIER than 02:00Z, so the reject at 02:00Z must win.
+        self._compile_cross_project_pattern()
+        events = self.all_events()
+        er.record_review(self.inbox_root, events[0]["event_id"], "reject",
+                         "owner", "02:00Z 的较新否定", False,
+                         reviewed_at="2026-07-26T02:00:00+00:00")
+        er.record_review(self.inbox_root, events[1]["event_id"], "accept",
+                         "owner", "01:00Z 的较早认可", True,
+                         reviewed_at="2026-07-26T09:00:00+08:00")
+        result = er.governance_report(self.inbox_root)
+        self.assertTrue(result["valid"])
+        (pattern,) = result["patterns"]
+        self.assertEqual(pattern["latest_review"]["decision"], "reject",
+                         "latest review must be chosen by real time, not string order")
+        self.assertIs(pattern["recommended_for_cass_review"], False)
+
+    def test_governance_thresholds_and_bad_threshold_rejected(self):
+        self._compile_cross_project_pattern()
+        events = self.all_events()
+        er.record_review(self.inbox_root, events[0]["event_id"], "accept",
+                         "owner", "确认", True,
+                         reviewed_at="2026-07-26T08:00:00+00:00")
+        # min_projects=3 is not met by 2 distinct projects.
+        strict = er.governance_report(self.inbox_root, min_projects=3)
+        self.assertIs(strict["patterns"][0]["recommended_for_cass_review"], False)
+        with self.assertRaises(er.ReviewError):
+            er.governance_report(self.inbox_root, min_occurrences=0)
+        rc = er.main(["--inbox-root", str(self.inbox_root),
+                      "governance", "--min-projects", "0"])
+        self.assertEqual(rc, 2)
+
+    def test_governance_fails_closed_on_invalid_inbox_and_torn_line(self):
+        self._compile_cross_project_pattern()
+        with self.month_file().open("a", encoding="utf-8") as handle:
+            handle.write("{torn json\n")
+        result = er.governance_report(self.inbox_root)
+        self.assertFalse(result["valid"])
+        self.assertEqual(result["patterns"], [],
+                         "an invalid inbox must produce no aggregation")
+        self.assertIn("invalid_json", json.dumps(result["issues"]))
+        rc = er.main(["--inbox-root", str(self.inbox_root), "governance", "--json"])
+        self.assertEqual(rc, 1)
+        # Readers themselves must tolerate torn lines (never crash).
+        self.assertEqual(len(er.read_candidate_events(self.inbox_root)), 2)
+
+    def test_governance_cli_json_shape(self):
+        self._compile_cross_project_pattern()
+        rc = er.main(["--inbox-root", str(self.inbox_root), "governance", "--json"])
+        self.assertEqual(rc, 0)
+        rc = er.main(["--inbox-root", str(self.inbox_root), "governance"])
+        self.assertEqual(rc, 0)
+        # Read-only: nothing but inbox files and the lock file may exist.
+        written = sorted(p.relative_to(self.inbox_root).as_posix()
+                         for p in self.inbox_root.rglob("*") if p.is_file())
+        self.assertEqual(written, [".experience-review.lock", f"inbox/{MONTH}.jsonl"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -9,13 +9,19 @@ independent, append-only review inbox. The compiler is deliberately one-way:
     ``completed_at`` falls on that exact local calendar day.
   * Each candidate becomes one deterministic review event carrying
     ``status=inbox``, ``auto_promote=false`` and ``cass_write=false``.
-    There is NO review/apply/promotion command here and this tool never
+    There is NO apply/promotion command here and this tool never
     writes to CASS, the Fact Ledger, the Project Registry, or wiki pages.
   * Receipt ``action`` / ``result`` / ``query`` fields are never copied;
     only the candidate payload plus minimal source attribution survives.
   * Human review decisions are separate append-only records under
     ``<inbox-root>/reviews/YYYY-MM.jsonl``. They never mutate candidates or
     write to CASS.
+  * ``governance`` is a read-only cross-task reuse report: it groups
+    candidates by the project-independent ``pattern_key`` and flags a
+    pattern ``recommended_for_cass_review`` only when the latest review is
+    accept+reusable AND the pattern repeats across enough projects. It
+    writes nothing (beyond the shared lock file) and always reports
+    ``cass_write=false`` / ``auto_promote=false``.
 
 Failure policy (fail-closed):
   * Unparseable receipt JSON lines, malformed receipt source fields, and
@@ -65,6 +71,8 @@ SECRET_RE = re.compile(
 # must never carry them (checked by validate).
 ILLEGAL_PROMOTION_KEYS = ("promoted", "promoted_at", "promotion", "applied", "cass_id")
 REVIEW_DECISIONS = ("accept", "reject", "defer")
+DEFAULT_MIN_OCCURRENCES = 2
+DEFAULT_MIN_PROJECTS = 2
 
 
 class ReviewError(Exception):
@@ -570,28 +578,223 @@ def validate_review(review: Any, candidates: set[str]) -> list[str]:
 
 
 def validate_reviews(inbox_root: Path) -> dict[str, Any]:
-    candidates = event_ids(inbox_root)
-    issues: list[dict[str, Any]] = []
-    count = 0
-    seen: set[str] = set()
-    for path in review_files(inbox_root):
-        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    lock = review_lock(inbox_root, exclusive=False)
+    try:
+        candidates = event_ids(inbox_root)
+        issues: list[dict[str, Any]] = []
+        count = 0
+        seen: set[str] = set()
+        for path in review_files(inbox_root):
+            for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if not line.strip():
+                    continue
+                count += 1
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    issues.append({"path": str(path), "line": line_number, "issue": f"invalid_json: {exc.msg}"})
+                    continue
+                for error in validate_review(row, candidates):
+                    issues.append({"path": str(path), "line": line_number, "issue": error})
+                rid = row.get("review_id") if isinstance(row, dict) else None
+                if isinstance(rid, str) and rid in seen:
+                    issues.append({"path": str(path), "line": line_number, "issue": f"duplicate review_id: {rid}"})
+                elif isinstance(rid, str):
+                    seen.add(rid)
+    finally:
+        lock.close()
+    return {"schema_version": SCHEMA_VERSION, "command": "review-validate", "valid": not issues, "review_count": count, "issue_count": len(issues), "issues": issues[:MAX_ISSUES_REPORTED]}
+
+
+def pattern_key(candidate: dict[str, Any]) -> str:
+    """Project-independent identity for repeated experience patterns."""
+    return stable_id("xpattern_", candidate)
+
+
+def read_candidate_events(inbox_root: Path) -> list[dict[str, Any]]:
+    """All candidate events. Bad JSON lines are skipped here — ``validate``
+    is the strict checker and ``governance`` refuses to report on an
+    invalid inbox; these readers must never crash on a torn line."""
+    events: list[dict[str, Any]] = []
+    for path in iter_event_files(inbox_root):
+        for line in path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
-            count += 1
             try:
                 row = json.loads(line)
-            except json.JSONDecodeError as exc:
-                issues.append({"path": str(path), "line": line_number, "issue": f"invalid_json: {exc.msg}"})
+            except json.JSONDecodeError:
                 continue
-            for error in validate_review(row, candidates):
-                issues.append({"path": str(path), "line": line_number, "issue": error})
-            rid = row.get("review_id") if isinstance(row, dict) else None
-            if isinstance(rid, str) and rid in seen:
-                issues.append({"path": str(path), "line": line_number, "issue": f"duplicate review_id: {rid}"})
-            elif isinstance(rid, str):
-                seen.add(rid)
-    return {"schema_version": SCHEMA_VERSION, "command": "review-validate", "valid": not issues, "review_count": count, "issue_count": len(issues), "issues": issues[:MAX_ISSUES_REPORTED]}
+            if isinstance(row, dict):
+                events.append(row)
+    return events
+
+
+def read_review_records(inbox_root: Path) -> list[dict[str, Any]]:
+    """All review records; bad JSON lines skipped (see read_candidate_events)."""
+    reviews: list[dict[str, Any]] = []
+    for path in review_files(inbox_root):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(row, dict):
+                reviews.append(row)
+    return reviews
+
+
+def review_time_key(review: dict[str, Any]) -> tuple[int, Any, str]:
+    """Sort key for "latest review". ``reviewed_at`` is parsed to an aware
+    datetime so mixed RFC3339 offsets (+08:00 vs Z) compare by real time,
+    not lexicographically; unparseable values sort first (validate is the
+    strict checker). ``review_id`` is the deterministic tie-break."""
+    stamp = review.get("reviewed_at")
+    if isinstance(stamp, str):
+        text = stamp.strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            return (1, dt.datetime.fromisoformat(text), str(review.get("review_id", "")))
+        except ValueError:
+            pass
+    return (0, stamp if isinstance(stamp, str) else "", str(review.get("review_id", "")))
+
+
+def latest_review(reviews: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not reviews:
+        return None
+    return max(reviews, key=review_time_key)
+
+
+def governance_report(
+    inbox_root: Path,
+    *,
+    min_occurrences: int = DEFAULT_MIN_OCCURRENCES,
+    min_projects: int = DEFAULT_MIN_PROJECTS,
+) -> dict[str, Any]:
+    if min_occurrences < 1:
+        raise ReviewError("min_occurrences must be >= 1")
+    if min_projects < 1:
+        raise ReviewError("min_projects must be >= 1")
+    # Validate AND read under ONE shared lock: writers take the exclusive
+    # lock, so the report can never aggregate rows that arrived after
+    # validation (which could include unvalidated or torn data).
+    # validate_inbox / validate_reviews take their own nested shared locks
+    # on separate fds — shared locks are compatible, so this cannot deadlock.
+    lock = review_lock(inbox_root, exclusive=False)
+    try:
+        inbox_status = validate_inbox(inbox_root)
+        review_status = validate_reviews(inbox_root)
+        result: dict[str, Any] = {
+            "schema_version": SCHEMA_VERSION,
+            "command": "governance",
+            "valid": inbox_status["valid"] and review_status["valid"],
+            "min_occurrences": min_occurrences,
+            "min_projects": min_projects,
+            "event_count": inbox_status["event_count"],
+            "review_count": review_status["review_count"],
+            "issue_count": inbox_status["issue_count"] + review_status["issue_count"],
+            "issues": (inbox_status["issues"] + review_status["issues"])[:MAX_ISSUES_REPORTED],
+            "pattern_count": 0,
+            "patterns": [],
+            "recommendations": [],
+            "cass_write": False,
+            "auto_promote": False,
+        }
+        if not result["valid"]:
+            # Fail closed: never aggregate an inbox with known issues.
+            return result
+        events = read_candidate_events(inbox_root)
+        reviews = read_review_records(inbox_root)
+    finally:
+        lock.close()
+
+    reviews_by_event: dict[str, list[dict[str, Any]]] = {}
+    for review in reviews:
+        reviews_by_event.setdefault(review["event_id"], []).append(review)
+
+    grouped: dict[str, dict[str, Any]] = {}
+    for event in events:
+        candidate = event["candidate"]
+        key = pattern_key(candidate)
+        source = event["source"]
+        group = grouped.setdefault(
+            key,
+            {
+                "pattern_key": key,
+                "candidate": candidate,
+                "event_ids": [],
+                "projects": set(),
+                "agents": set(),
+                "days": set(),
+                "reviews": [],
+            },
+        )
+        group["event_ids"].append(event["event_id"])
+        group["projects"].add(source["project_id"])
+        group["agents"].add(source["agent"])
+        day = day_of(source["completed_at"])
+        if day:
+            group["days"].add(day)
+        group["reviews"].extend(reviews_by_event.get(event["event_id"], []))
+
+    patterns: list[dict[str, Any]] = []
+    recommendations: list[dict[str, Any]] = []
+    for group in grouped.values():
+        review = latest_review(group["reviews"])
+        review_summary = None
+        if review:
+            review_summary = {
+                "review_id": review["review_id"],
+                "event_id": review["event_id"],
+                "decision": review["decision"],
+                "reviewer": review["reviewer"],
+                "reusable": review["reusable"],
+                "reviewed_at": review["reviewed_at"],
+                "cass_recommendation": review["cass_recommendation"],
+            }
+        occurrence_count = len(group["event_ids"])
+        distinct_projects = len(group["projects"])
+        accepted_reusable = bool(review and review["decision"] == "accept" and review["reusable"])
+        repeated_cross_project = occurrence_count >= min_occurrences and distinct_projects >= min_projects
+        recommended = accepted_reusable and repeated_cross_project
+        pattern = {
+            "pattern_key": group["pattern_key"],
+            "candidate": group["candidate"],
+            "occurrence_count": occurrence_count,
+            "distinct_projects": distinct_projects,
+            "distinct_agents": len(group["agents"]),
+            "distinct_days": len(group["days"]),
+            "event_ids": sorted(group["event_ids"]),
+            "latest_review": review_summary,
+            "review_count": len(group["reviews"]),
+            "recommended_for_cass_review": recommended,
+            "cass_write": False,
+            "auto_promote": False,
+        }
+        patterns.append(pattern)
+        if recommended:
+            recommendations.append(
+                {
+                    "pattern_key": pattern["pattern_key"],
+                    "event_ids": pattern["event_ids"],
+                    "occurrence_count": occurrence_count,
+                    "distinct_projects": distinct_projects,
+                    "latest_review": review_summary,
+                    "recommendation": "human_review_for_cass_promotion",
+                    "cass_write": False,
+                    "auto_promote": False,
+                }
+            )
+
+    patterns.sort(key=lambda p: (-p["occurrence_count"], -p["distinct_projects"], p["pattern_key"]))
+    recommendations.sort(key=lambda r: (-r["occurrence_count"], -r["distinct_projects"], r["pattern_key"]))
+    result["patterns"] = patterns
+    result["recommendations"] = recommendations
+    result["pattern_count"] = len(patterns)
+    return result
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -617,6 +820,10 @@ def build_parser() -> argparse.ArgumentParser:
     review_cmd.add_argument("--json", action="store_true")
     commands.add_parser("validate", help="strictly validate every review inbox JSONL")
     commands.add_parser("review-status", help="validate the append-only human review records")
+    governance_cmd = commands.add_parser("governance", help="read-only reuse evidence and CASS review recommendations")
+    governance_cmd.add_argument("--min-occurrences", type=int, default=DEFAULT_MIN_OCCURRENCES)
+    governance_cmd.add_argument("--min-projects", type=int, default=DEFAULT_MIN_PROJECTS)
+    governance_cmd.add_argument("--json", action="store_true")
     return parser
 
 
@@ -656,6 +863,20 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "review-status":
             result = validate_reviews(inbox_root)
             print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+            return 0 if result["valid"] else 1
+        if args.command == "governance":
+            result = governance_report(
+                inbox_root,
+                min_occurrences=args.min_occurrences,
+                min_projects=args.min_projects,
+            )
+            if args.json:
+                print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+            else:
+                print(
+                    f"经验治理｜候选 {result['event_count']}，模式 {result['pattern_count']}，"
+                    f"CASS 人审建议 {len(result['recommendations'])}，问题 {result['issue_count']}"
+                )
             return 0 if result["valid"] else 1
         result = validate_inbox(inbox_root)
         review_result = validate_reviews(inbox_root)
