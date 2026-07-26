@@ -1,0 +1,13 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "hbrain-cognitive-loop",
+  "version": "0.1.0",
+  "description": "Close the Hbrain cognitive loop across anchors, recall, closeout, event logs, and writeback proposals.",
+  "author": {
+    "name": "Haidong + AI Agents",
+    "email": "haidong.jiang@qq.com"
+  },
+  "skills": [
+    "./skills/hbrain-cognitive-loop"
+  ]
+}

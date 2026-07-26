@@ -13,6 +13,7 @@
 - `haidong-os/schema/`：运行回执契约
 - `haidong-os/scripts/`：macOS/zsh 调度封装
 - `facts/schema/`：追加式事实事件契约（不含事实数据）
+- `skills/`：与项目直接配套的 `hbrain-cognitive-loop` 和 `second-brain-router` skill
 
 ## 快速验证
 
@@ -21,6 +22,8 @@ python3 -m unittest discover -s haidong-os/automation/tests -v
 ```
 
 运行前请通过命令行参数或环境变量配置本机的 wiki、事实、项目、回执和工具路径。仓库中的默认路径仅用于海东本机部署示例，不会携带任何本机数据。
+
+skill 的职责边界：路由 skill 只按需召回，认知闭环 skill 负责知识沉淀、提案和人脑锚点治理；二者都不会在 Agent 启动时预加载整库。
 
 ## 许可证
 

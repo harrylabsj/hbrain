@@ -1,0 +1,4 @@
+interface:
+  display_name: "Hbrain Cognitive Loop"
+  short_description: "Separate Hbrain knowledge deposition from 人脑 anchor training"
+  default_prompt: "Use $hbrain-cognitive-loop to close out this conversation, propose durable second-brain writeback, and only record human-side anchor signals."

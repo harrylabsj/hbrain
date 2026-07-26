@@ -1,0 +1,17 @@
+{
+  "name": "hbrain-cognitive-loop",
+  "version": "0.1.0",
+  "description": "Close the Hbrain loop across knowledge events, knowledge misses, human-side cognitive-anchor training, Gbrain/CASS recall, writeback inbox proposals, and second-brain automation governance.",
+  "keywords": [
+    "second-brain",
+    "hbrain",
+    "cognitive-anchors",
+    "gbrain",
+    "cass",
+    "writeback",
+    "knowledge-management",
+    "automation"
+  ],
+  "author": "Haidong + AI Agents",
+  "license": "MIT"
+}
