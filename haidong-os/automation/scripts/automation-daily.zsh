@@ -13,6 +13,7 @@ export PATH="/Users/jianghaidong/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/
 : "${AUTOMATION_RUNNER:=/Users/jianghaidong/hbrain/haidong-os/automation/runner/automation_runner.py}"
 : "${EXPERIENCE_REVIEW:=/Users/jianghaidong/hbrain/haidong-os/automation/experience_review.py}"
 : "${FIVE_DOMAIN_DAILY:=/Users/jianghaidong/hbrain/haidong-os/automation/five_domain_daily.py}"
+: "${PROJECT_CHANGE_COMPILER:=/Users/jianghaidong/hbrain/haidong-os/automation/project_change_compiler.py}"
 : "${FACTS_ROOT:=/Users/jianghaidong/hbrain/facts}"
 : "${PROJECTS_ROOT:=/Users/jianghaidong/hbrain/haidong-os/projects}"
 : "${RECEIPTS_ROOT:=/Users/jianghaidong/hbrain/haidong-os/receipts}"
@@ -25,6 +26,7 @@ python3 "$AUTOMATION_RUNNER" --mode daily \
   --gbrain "$GBRAIN_BIN" \
   --experience-review "$EXPERIENCE_REVIEW" \
   --five-domain-daily "$FIVE_DOMAIN_DAILY" \
+  --project-change-compiler "$PROJECT_CHANGE_COMPILER" \
   --facts-root "$FACTS_ROOT" \
   --projects-root "$PROJECTS_ROOT" \
   --receipts-root "$RECEIPTS_ROOT" \

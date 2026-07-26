@@ -252,7 +252,7 @@ sys.exit(0 if n >= 2 else 1)  # succeeds on the 3rd attempt
         self.assertFalse((self.state / "history").exists())
 
     def test_mode_plans_shape(self):
-        for mode, expected_local in (("daily", 3), ("weekly", 5), ("monthly", 2)):
+        for mode, expected_local in (("daily", 4), ("weekly", 5), ("monthly", 2)):
             plan = ar.build_mode_plan(mode, sys.executable, "/x/hbrain_loop.py",
                                       "/x/repo", "gbrain")
             self.assertEqual(len(plan.steps), expected_local + 3)  # +3 index steps
@@ -272,17 +272,19 @@ sys.exit(0 if n >= 2 else 1)  # succeeds on the 3rd attempt
                                    "/x/wiki", "gbrain",
                                    experience_review="/x/experience_review.py",
                                    five_domain_daily="/x/five_domain_daily.py",
+                                   project_change_compiler="/x/project_change_compiler.py",
                                    facts_root="/x/facts",
                                    projects_root="/x/projects",
                                    receipts_root="/x/receipts",
                                    experience_inbox_root="/x/review-inbox")
-        self.assertEqual(len(daily.steps), 6)  # 3 required local + 3 optional index
-        self.assertEqual([s.name for s in daily.steps[:3]], [
+        self.assertEqual(len(daily.steps), 7)  # 4 required local + 3 optional index
+        self.assertEqual([s.name for s in daily.steps[:4]], [
             "hbrain-daily-maintenance",
             "experience-review-compile",
             "five-domain-daily-report",
+            "project-change-compile",
         ])
-        for s in daily.steps[:3]:
+        for s in daily.steps[:4]:
             self.assertTrue(s.required)
             self.assertEqual(s.category, "write")
         self.assertEqual(daily.steps[0].argv,
@@ -299,6 +301,10 @@ sys.exit(0 if n >= 2 else 1)  # succeeds on the 3rd attempt
                           "--facts-root", "/x/facts",
                           "--projects-root", "/x/projects",
                           "--receipts-root", "/x/receipts"))
+        self.assertEqual(daily.steps[3].argv,
+                         (sys.executable, "/x/project_change_compiler.py",
+                          "--facts-root", "/x/facts",
+                          "--projects-root", "/x/projects", "compile"))
 
         # Categories verified against the real command interfaces.
         weekly = ar.build_mode_plan("weekly", sys.executable, "/x/hbrain_loop.py",
@@ -351,6 +357,7 @@ sys.exit(0 if n >= 2 else 1)  # succeeds on the 3rd attempt
                       "--repo", "/x/wiki",
                       "--experience-review", "/x/experience_review.py",
                       "--five-domain-daily", "/x/five_domain_daily.py",
+                      "--project-change-compiler", "/x/project_change_compiler.py",
                       "--facts-root", "/x/facts",
                       "--projects-root", "/x/projects",
                       "--receipts-root", "/x/receipts",
@@ -359,7 +366,7 @@ sys.exit(0 if n >= 2 else 1)  # succeeds on the 3rd attempt
         with open(self.state / "status-daily.json") as f:
             disk = json.load(f)
         self.assertEqual(disk["status"], "dry_run")
-        self.assertEqual(len(disk["steps"]), 6)  # 3 required local + 3 optional index
+        self.assertEqual(len(disk["steps"]), 7)  # 4 required local + 3 optional index
         for rec in disk["steps"]:
             self.assertEqual(rec["status"], "planned", "dry-run must execute nothing")
             self.assertEqual(rec["attempts"], 0)
@@ -374,6 +381,10 @@ sys.exit(0 if n >= 2 else 1)  # succeeds on the 3rd attempt
             "--facts-root", "/x/facts",
             "--projects-root", "/x/projects",
             "--receipts-root", "/x/receipts"])
+        self.assertEqual(disk["steps"][3]["argv"], [
+            sys.executable, "/x/project_change_compiler.py",
+            "--facts-root", "/x/facts",
+            "--projects-root", "/x/projects", "compile"])
         self.assertFalse((self.state / "history").exists())
 
 

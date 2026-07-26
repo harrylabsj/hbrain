@@ -21,7 +21,7 @@ tags: [haidong-os, five-domain, daily-report, learning-bridge]
 - 每域最多展示 20 条；坏 JSON 计入 issues；秘密样式内容脱敏；输出叶子软链接被拒绝。
 - 新增 `automation/experience_review.py`：将 receipt 经验候选编译为独立、追加式待审事件；只保留候选与最小来源，不复制 action/result/query。
 - 经验事件固定 `status: inbox`、`auto_promote: false`、`cass_write: false`；没有 review/apply/promote 命令，不访问 CASS。
-- daily reliability runner 已按固定顺序接入：认知维护 → 经验候选编译 → 五域日报；之后才执行 3 个可选 Gbrain 索引步骤。
+- daily reliability runner 已按固定顺序接入：认知维护 → 经验候选编译 → 五域日报 → 项目低影响提案编译；之后才执行 3 个可选 Gbrain 索引步骤。
 - 新增 `automation/project_change_compiler.py`：只把当日已验证、明确归属已注册项目的事实编译为低影响 Project Registry 提案（`last_fact_id`、`last_reviewed_at`），不自动应用高影响字段。
 
 ## 不变量
@@ -40,15 +40,15 @@ tags: [haidong-os, five-domain, daily-report, learning-bridge]
 - 数据问题 0，秘密脱敏 0，未发生自动晋升。
 - Claude-Kimi 完成实现和自审；Codex App 独立复跑完整测试及真实数据 dry-run/write canary。
 - 经验候选正式 inbox：1 条事件、0 个问题；重复编译新增 0，幂等通过。
-- `automation-daily.zsh` 真实路径 dry-run：6 个步骤全部 `planned`、`attempts=0`、无 history，确认未执行维护或 Gbrain。
+- `automation-daily.zsh` 真实路径 dry-run：7 个步骤全部 `planned`、`attempts=0`、无 history，确认未执行维护或 Gbrain。
+- 首次真实前一日 daily runner 已完成：7/7 步骤 `ok`，history=`/Users/jianghaidong/.hermes/state/hbrain-automation/history/daily/20260726T075333-8f8e04d8.json`；经验候选 0、新增项目提案 0、日报数据问题 0，Gbrain sync/embed/health 均成功。
 
 ## 当前状态
 
-阶段 4 继续处于 canary。五域日报、经验候选待审队列、daily runner 编排和事实到低影响项目提案编译器已经完成；尚未观察一次真实的前一日定时运行，也未建立多次现实验证后进入知识/CASS 写回闸门的人工复核状态。
+阶段 4 继续处于 canary。五域日报、经验候选待审队列、daily runner 编排、事实到低影响项目提案编译器和首次真实前一日运行观察已经完成；尚未建立多次现实验证后进入知识/CASS 写回闸门的人工复核状态。
 
 ## 下一步
 
-1. 观察一次真实的前一日 daily runner，核验状态历史、日报和经验队列能由同一运行重建。
-2. 观察并复核 `project_change_compiler.py` 生成的低影响提案，不自动应用高影响字段。
-3. 为经验候选建立可追溯人工复核状态；只有重复出现且跨任务可复用时才建议进入 CASS。
-4. 为知识/经验晋升建立统一 review 状态，不直接写规范知识或成熟 playbook。
+1. 复核 `project_change_compiler.py` 生成的低影响提案，不自动应用高影响字段。
+2. 为经验候选建立可追溯人工复核状态；只有重复出现且跨任务可复用时才建议进入 CASS。
+3. 为知识/经验晋升建立统一 review 状态，不直接写规范知识或成熟 playbook。

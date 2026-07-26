@@ -370,6 +370,7 @@ def run_plan(
 # the matching CLI flags or same-named environment variables).
 DEFAULT_EXPERIENCE_REVIEW = "/Users/jianghaidong/hbrain/haidong-os/automation/experience_review.py"
 DEFAULT_FIVE_DOMAIN_DAILY = "/Users/jianghaidong/hbrain/haidong-os/automation/five_domain_daily.py"
+DEFAULT_PROJECT_CHANGE_COMPILER = "/Users/jianghaidong/hbrain/haidong-os/automation/project_change_compiler.py"
 DEFAULT_FACTS_ROOT = "/Users/jianghaidong/hbrain/facts"
 DEFAULT_PROJECTS_ROOT = "/Users/jianghaidong/hbrain/haidong-os/projects"
 DEFAULT_RECEIPTS_ROOT = "/Users/jianghaidong/hbrain/haidong-os/receipts"
@@ -406,6 +407,7 @@ def _index_steps(gbrain: str, repo: str) -> list:
 def build_mode_plan(mode: str, python: str, hbrain_loop: str, repo: str, gbrain: str, *,
                     experience_review: str = DEFAULT_EXPERIENCE_REVIEW,
                     five_domain_daily: str = DEFAULT_FIVE_DOMAIN_DAILY,
+                    project_change_compiler: str = DEFAULT_PROJECT_CHANGE_COMPILER,
                     facts_root: str = DEFAULT_FACTS_ROOT,
                     projects_root: str = DEFAULT_PROJECTS_ROOT,
                     receipts_root: str = DEFAULT_RECEIPTS_ROOT,
@@ -428,6 +430,11 @@ def build_mode_plan(mode: str, python: str, hbrain_loop: str, repo: str, gbrain:
                        "--facts-root", facts_root,
                        "--projects-root", projects_root,
                        "--receipts-root", receipts_root)),
+            Step(name="project-change-compile", category="write",
+                 argv=(python, project_change_compiler,
+                       "--facts-root", facts_root,
+                       "--projects-root", projects_root,
+                       "compile")),
         ]
     elif mode == "weekly":
         local = [
@@ -478,6 +485,9 @@ def main(argv=None) -> int:
     parser.add_argument("--five-domain-daily",
                         default=os.environ.get("FIVE_DOMAIN_DAILY", DEFAULT_FIVE_DOMAIN_DAILY),
                         help="five_domain_daily.py path (daily stage-4 report step)")
+    parser.add_argument("--project-change-compiler",
+                        default=os.environ.get("PROJECT_CHANGE_COMPILER", DEFAULT_PROJECT_CHANGE_COMPILER),
+                        help="project_change_compiler.py path (daily stage-4 proposal step)")
     parser.add_argument("--facts-root",
                         default=os.environ.get("FACTS_ROOT", DEFAULT_FACTS_ROOT))
     parser.add_argument("--projects-root",
@@ -507,6 +517,7 @@ def main(argv=None) -> int:
                            args.gbrain,
                            experience_review=args.experience_review,
                            five_domain_daily=args.five_domain_daily,
+                           project_change_compiler=args.project_change_compiler,
                            facts_root=args.facts_root,
                            projects_root=args.projects_root,
                            receipts_root=args.receipts_root,

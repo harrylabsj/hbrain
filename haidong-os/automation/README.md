@@ -78,12 +78,13 @@ and a bounded output excerpt (tail, ≤ 2000 chars).
 Mode plans (`build_mode_plan`) map the **real** production command interfaces:
 
 - daily: `automation-run --mode daily --apply-frontmatter` (write),
-  then the two five-domain stage-4 steps in fixed order:
+  then the three five-domain stage-4 steps in fixed order:
   `experience_review.py --receipts-root <receipts> --inbox-root <review-inbox> compile` (write),
-  `five_domain_daily.py --wiki-root <wiki> --facts-root <facts> --projects-root <projects> --receipts-root <receipts>` (write).
-  All three are required local steps; the runner CLI exposes
+  `five_domain_daily.py --wiki-root <wiki> --facts-root <facts> --projects-root <projects> --receipts-root <receipts>` (write),
+  and `project_change_compiler.py --facts-root <facts> --projects-root <projects> compile` (write).
+  All four are required local steps; the runner CLI exposes
   `--experience-review`, `--five-domain-daily`, `--facts-root`, `--projects-root`,
-  `--receipts-root`, `--experience-inbox-root` (local absolute defaults,
+  `--receipts-root`, `--experience-inbox-root`, and `--project-change-compiler` (local absolute defaults,
   same-named environment variables, and `automation-daily.zsh` overrides all
   supported), so the daily plan is 6 steps total (3 required local + 3 optional index)
 - weekly: `automation-run --mode weekly --apply-frontmatter` (write),
