@@ -388,6 +388,59 @@ class ExperienceReviewTests(unittest.TestCase):
                 path.startswith("review/inbox/") or path == "review/.experience-review.lock",
                 f"unexpected write outside the review inbox: {path}")
 
+    # -- human review state -----------------------------------------------
+
+    def test_human_review_is_separate_append_only_state(self):
+        self.write_receipts([make_receipt("receipt_" + "a" * 24)])
+        self.compile()
+        event = self.all_events()[0]
+        result = er.record_review(
+            self.inbox_root, event["event_id"], "accept", "jianghaidong",
+            "重复出现且可迁移", True, reviewed_at="2026-07-26T08:00:00+00:00")
+        self.assertEqual(result["status"], "recorded")
+        self.assertTrue((self.inbox_root / "reviews" / "2026-07.jsonl").is_file())
+        self.assertTrue(er.validate_reviews(self.inbox_root)["valid"])
+        self.assertEqual(self.all_events()[0], event, "candidate event must remain immutable")
+        review = json.loads((self.inbox_root / "reviews" / "2026-07.jsonl").read_text())
+        self.assertTrue(review["cass_recommendation"])
+        self.assertFalse(review["cass_write"])
+        self.assertFalse(review["auto_promote"])
+
+    def test_human_review_is_idempotent_and_dry_run_writes_nothing(self):
+        self.write_receipts([make_receipt("receipt_" + "a" * 24)])
+        self.compile()
+        event_id = self.all_events()[0]["event_id"]
+        dry = er.record_review(self.inbox_root, event_id, "defer", "owner", "需要更多样本", False, dry_run=True, reviewed_at="2026-07-26T08:00:00+00:00")
+        self.assertEqual(dry["status"], "dry_run")
+        self.assertFalse((self.inbox_root / "reviews").exists())
+        first = er.record_review(self.inbox_root, event_id, "defer", "owner", "需要更多样本", False, reviewed_at="2026-07-26T08:00:00+00:00")
+        second = er.record_review(self.inbox_root, event_id, "defer", "owner", "需要更多样本", False, reviewed_at="2026-07-26T09:00:00+00:00")
+        self.assertEqual(first["status"], "recorded")
+        self.assertEqual(second["status"], "exists")
+        self.assertEqual(len(list((self.inbox_root / "reviews").glob("*.jsonl"))), 1)
+
+    def test_human_review_requires_existing_candidate_and_valid_decision(self):
+        with self.assertRaises(er.ReviewError):
+            er.record_review(self.inbox_root, "xreview_" + "a" * 24, "accept", "owner", "reason", True)
+        self.write_receipts([make_receipt("receipt_" + "a" * 24)])
+        self.compile()
+        event_id = self.all_events()[0]["event_id"]
+        with self.assertRaises(er.ReviewError):
+            er.record_review(self.inbox_root, event_id, "promote", "owner", "reason", True)
+
+    def test_review_validation_rejects_tampering_and_unknown_event(self):
+        self.write_receipts([make_receipt("receipt_" + "a" * 24)])
+        self.compile()
+        event_id = self.all_events()[0]["event_id"]
+        er.record_review(self.inbox_root, event_id, "reject", "owner", "not reusable", False, reviewed_at="2026-07-26T08:00:00+00:00")
+        path = self.inbox_root / "reviews" / "2026-07.jsonl"
+        review = json.loads(path.read_text())
+        review["cass_write"] = True
+        path.write_text(json.dumps(review) + "\n")
+        result = er.validate_reviews(self.inbox_root)
+        self.assertFalse(result["valid"])
+        self.assertIn("cass_write must be false", json.dumps(result["issues"]))
+
 
 if __name__ == "__main__":
     unittest.main()

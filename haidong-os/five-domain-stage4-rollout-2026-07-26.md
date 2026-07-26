@@ -23,6 +23,7 @@ tags: [haidong-os, five-domain, daily-report, learning-bridge]
 - 经验事件固定 `status: inbox`、`auto_promote: false`、`cass_write: false`；没有 review/apply/promote 命令，不访问 CASS。
 - daily reliability runner 已按固定顺序接入：认知维护 → 经验候选编译 → 五域日报 → 项目低影响提案编译；之后才执行 3 个可选 Gbrain 索引步骤。
 - 新增 `automation/project_change_compiler.py`：只把当日已验证、明确归属已注册项目的事实编译为低影响 Project Registry 提案（`last_fact_id`、`last_reviewed_at`），不自动应用高影响字段。
+- 新增经验候选人工复核状态：候选事件保持不可变，复核决定追加到 `experience-review/reviews/YYYY-MM.jsonl`，支持 `accept/reject/defer`、复核人、理由和可复用性；`accept + reusable` 只生成 `cass_recommendation`，不写 CASS、不自动晋升。
 
 ## 不变量
 
@@ -45,10 +46,10 @@ tags: [haidong-os, five-domain, daily-report, learning-bridge]
 
 ## 当前状态
 
-阶段 4 继续处于 canary。五域日报、经验候选待审队列、daily runner 编排、事实到低影响项目提案编译器和首次真实前一日运行观察已经完成；尚未建立多次现实验证后进入知识/CASS 写回闸门的人工复核状态。
+阶段 4 继续处于 canary。五域日报、经验候选待审队列、daily runner 编排、事实到低影响项目提案编译器、首次真实前一日运行观察和人工复核状态最小切片已经完成；尚未建立多次现实验证后进入知识/CASS 写回闸门的晋升流程。
 
 ## 下一步
 
 1. 复核 `project_change_compiler.py` 生成的低影响提案，不自动应用高影响字段。
-2. 为经验候选建立可追溯人工复核状态；只有重复出现且跨任务可复用时才建议进入 CASS。
+2. 观察人工复核记录的重复、跨任务复用证据；只有满足条件时才建议进入 CASS。
 3. 为知识/经验晋升建立统一 review 状态，不直接写规范知识或成熟 playbook。

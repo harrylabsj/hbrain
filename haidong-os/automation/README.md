@@ -29,6 +29,7 @@ Dependencies: Python 3 stdlib + zsh only.
 | `five_domain_daily.py` | Stage-4 minimal slice: derived five-domain daily report (facts/projects/knowledge/experience/evidence), proposal-only. |
 | `tests/test_five_domain_daily.py` | Five-domain summary, date filtering, caps, bad-JSON issues, redaction, no-write, and symlink tests. |
 | `experience_review.py` | Stage-4 slice 2: compiles receipt `experience_candidate` entries into an append-only review inbox (`compile`/`validate` only; deterministic ids, within-batch and cross-month dedup, fail-closed on bad JSON or secret-like candidates; never copies action/result/query, never writes CASS). |
+| `experience_review.py review` | Human-driven append-only review record (`accept`/`reject`/`defer`) under `experience-review/reviews/`; candidate events remain immutable and `cass_write`/`auto_promote` stay false. |
 | `tests/test_experience_review.py` | Date filter, no action/result leak, idempotency, concurrency, cross-month dedup, bad-JSON/secret fail-closed, symlink refusal, dry-run, and validate tests. |
 
 ## Five-domain stage 3
@@ -164,6 +165,21 @@ and registered project files. It emits idempotent inbox proposals containing
 `last_fact_id` and `last_reviewed_at` only. Proposals are marked
 `proposal_only: true`, `auto_promote: false`, and `high_impact: false`.
 Use `--no-write` first; `validate` audits the proposal inbox.
+
+Human review is deliberately separate from candidate compilation. After a
+candidate is inspected, record a decision explicitly:
+
+```sh
+python3 experience_review.py --inbox-root <experience-review> review \
+  --event-id <xreview_...> --decision accept --reviewer <name> \
+  --rationale "可迁移且跨任务复用" --reusable --json
+python3 experience_review.py --inbox-root <experience-review> review-status
+```
+
+Review records are append-only, idempotent, reference an existing candidate,
+and never write CASS or mutate the candidate. `accept + reusable` only sets a
+review-time `cass_recommendation`; a separate human-approved promotion process
+would still be required.
 
 ## Running the tests
 

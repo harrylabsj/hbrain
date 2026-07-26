@@ -13,6 +13,9 @@ independent, append-only review inbox. The compiler is deliberately one-way:
     writes to CASS, the Fact Ledger, the Project Registry, or wiki pages.
   * Receipt ``action`` / ``result`` / ``query`` fields are never copied;
     only the candidate payload plus minimal source attribution survives.
+  * Human review decisions are separate append-only records under
+    ``<inbox-root>/reviews/YYYY-MM.jsonl``. They never mutate candidates or
+    write to CASS.
 
 Failure policy (fail-closed):
   * Unparseable receipt JSON lines, malformed receipt source fields, and
@@ -61,6 +64,7 @@ SECRET_RE = re.compile(
 # Keys that would imply a promotion happened or is requested; review events
 # must never carry them (checked by validate).
 ILLEGAL_PROMOTION_KEYS = ("promoted", "promoted_at", "promotion", "applied", "cass_id")
+REVIEW_DECISIONS = ("accept", "reject", "defer")
 
 
 class ReviewError(Exception):
@@ -404,6 +408,192 @@ def validate_inbox(inbox_root: Path) -> dict[str, Any]:
     }
 
 
+def event_ids(inbox_root: Path) -> set[str]:
+    """Return candidate ids without treating review records as candidates."""
+    ids: set[str] = set()
+    for path in iter_event_files(inbox_root):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(row, dict) and isinstance(row.get("event_id"), str):
+                ids.add(row["event_id"])
+    return ids
+
+
+def review_files(inbox_root: Path) -> Iterable[Path]:
+    reviews = inbox_root / "reviews"
+    if not reviews.exists():
+        return []
+    if reviews.is_symlink():
+        raise ReviewError("experience-review reviews directory must not be a symlink")
+    return sorted(p for p in reviews.glob("*.jsonl") if p.is_file() and not p.is_symlink())
+
+
+def review_id(value: dict[str, Any]) -> str:
+    identity = {
+        key: value[key]
+        for key in ("event_id", "decision", "reviewer", "rationale", "reusable")
+    }
+    return stable_id("xreview_decision_", identity)
+
+
+def build_review(
+    event_id: str,
+    decision: str,
+    reviewer: str,
+    rationale: str,
+    reusable: bool,
+    reviewed_at: str,
+) -> dict[str, Any]:
+    value = {
+        "schema_version": SCHEMA_VERSION,
+        "event_id": event_id,
+        "decision": decision,
+        "reviewer": reviewer,
+        "rationale": rationale,
+        "reusable": reusable,
+        "reviewed_at": reviewed_at,
+        "auto_promote": False,
+        "cass_write": False,
+        "cass_recommendation": bool(decision == "accept" and reusable),
+    }
+    value["review_id"] = review_id(value)
+    return value
+
+
+def append_review(inbox_root: Path, review: dict[str, Any]) -> bool:
+    reviews = inbox_root / "reviews"
+    if reviews.exists() and reviews.is_symlink():
+        raise ReviewError("experience-review reviews directory must not be a symlink")
+    reviews.mkdir(parents=True, exist_ok=True)
+    if reviews.is_symlink():
+        raise ReviewError("experience-review reviews directory must not be a symlink")
+    reviewed_at = review["reviewed_at"]
+    try:
+        month = dt.datetime.fromisoformat(reviewed_at.replace("Z", "+00:00")).strftime("%Y-%m")
+    except ValueError as exc:
+        raise ReviewError("reviewed_at must be RFC3339") from exc
+    path = reviews / f"{month}.jsonl"
+    if path.is_symlink():
+        raise ReviewError(f"review month file must not be a symlink: {path}")
+    existing: set[str] = set()
+    for review_path in review_files(inbox_root):
+        for line in review_path.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(row, dict) and isinstance(row.get("review_id"), str):
+                existing.add(row["review_id"])
+    if review["review_id"] in existing:
+        return False
+    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(path, flags, 0o600)
+    with os.fdopen(fd, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(review, ensure_ascii=False, sort_keys=True) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    return True
+
+
+def record_review(
+    inbox_root: Path,
+    event_id: str,
+    decision: str,
+    reviewer: str,
+    rationale: str,
+    reusable: bool,
+    *,
+    reviewed_at: str | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    if not isinstance(event_id, str) or not event_id.startswith("xreview_"):
+        raise ReviewError("event_id must start with xreview_")
+    if decision not in REVIEW_DECISIONS:
+        raise ReviewError(f"decision must be one of {REVIEW_DECISIONS}")
+    if not isinstance(reviewer, str) or not reviewer.strip():
+        raise ReviewError("reviewer must be non-empty")
+    if not isinstance(rationale, str) or not rationale.strip():
+        raise ReviewError("rationale must be non-empty")
+    if not isinstance(reusable, bool):
+        raise ReviewError("reusable must be boolean")
+    if event_id not in event_ids(inbox_root):
+        raise ReviewError(f"unknown candidate event: {event_id}")
+    stamp = reviewed_at or dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    review = build_review(event_id, decision, reviewer.strip(), rationale.strip(), reusable, stamp)
+    if dry_run:
+        return {"status": "dry_run", "written": False, "review": review}
+    lock = review_lock(inbox_root, exclusive=True)
+    try:
+        written = append_review(inbox_root, review)
+    finally:
+        lock.close()
+    return {"status": "recorded" if written else "exists", "written": written, "review": review}
+
+
+def validate_review(review: Any, candidates: set[str]) -> list[str]:
+    if not isinstance(review, dict):
+        return ["review is not an object"]
+    required = {"schema_version", "review_id", "event_id", "decision", "reviewer", "rationale", "reusable", "reviewed_at", "auto_promote", "cass_write", "cass_recommendation"}
+    errors: list[str] = []
+    missing = sorted(required - set(review))
+    if missing:
+        return ["missing fields: " + ", ".join(missing)]
+    if review["schema_version"] != SCHEMA_VERSION:
+        errors.append(f"schema_version must be {SCHEMA_VERSION}")
+    if not isinstance(review["event_id"], str) or review["event_id"] not in candidates:
+        errors.append("event_id must reference an inbox candidate")
+    if review["decision"] not in REVIEW_DECISIONS:
+        errors.append(f"decision must be one of {REVIEW_DECISIONS}")
+    for field in ("reviewer", "rationale", "reviewed_at"):
+        if not isinstance(review[field], str) or not review[field].strip():
+            errors.append(f"{field} must be non-empty")
+    if not isinstance(review["reusable"], bool):
+        errors.append("reusable must be boolean")
+    if review["auto_promote"] is not False:
+        errors.append("auto_promote must be false")
+    if review["cass_write"] is not False:
+        errors.append("cass_write must be false")
+    if review["cass_recommendation"] is not (review["decision"] == "accept" and review["reusable"]):
+        errors.append("cass_recommendation does not match decision/reusable")
+    try:
+        dt.datetime.fromisoformat(review["reviewed_at"].replace("Z", "+00:00"))
+    except (AttributeError, ValueError):
+        errors.append("reviewed_at must be RFC3339")
+    if not errors and review["review_id"] != review_id(review):
+        errors.append("review_id does not match deterministic identity")
+    return errors
+
+
+def validate_reviews(inbox_root: Path) -> dict[str, Any]:
+    candidates = event_ids(inbox_root)
+    issues: list[dict[str, Any]] = []
+    count = 0
+    seen: set[str] = set()
+    for path in review_files(inbox_root):
+        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if not line.strip():
+                continue
+            count += 1
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as exc:
+                issues.append({"path": str(path), "line": line_number, "issue": f"invalid_json: {exc.msg}"})
+                continue
+            for error in validate_review(row, candidates):
+                issues.append({"path": str(path), "line": line_number, "issue": error})
+            rid = row.get("review_id") if isinstance(row, dict) else None
+            if isinstance(rid, str) and rid in seen:
+                issues.append({"path": str(path), "line": line_number, "issue": f"duplicate review_id: {rid}"})
+            elif isinstance(rid, str):
+                seen.add(rid)
+    return {"schema_version": SCHEMA_VERSION, "command": "review-validate", "valid": not issues, "review_count": count, "issue_count": len(issues), "issues": issues[:MAX_ISSUES_REPORTED]}
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--receipts-root", type=Path, default=DEFAULT_RECEIPTS_ROOT,
@@ -416,7 +606,17 @@ def build_parser() -> argparse.ArgumentParser:
     compile_cmd.add_argument("--dry-run", action="store_true",
                              help="report what would be appended; writes nothing and creates no lock file")
     compile_cmd.add_argument("--json", action="store_true", help="print the full JSON summary")
+    review_cmd = commands.add_parser("review", help="append one human review decision; never changes the candidate")
+    review_cmd.add_argument("--event-id", required=True)
+    review_cmd.add_argument("--decision", choices=REVIEW_DECISIONS, required=True)
+    review_cmd.add_argument("--reviewer", required=True)
+    review_cmd.add_argument("--rationale", required=True)
+    review_cmd.add_argument("--reusable", action="store_true")
+    review_cmd.add_argument("--reviewed-at", help="RFC3339 timestamp; defaults to current UTC")
+    review_cmd.add_argument("--dry-run", action="store_true")
+    review_cmd.add_argument("--json", action="store_true")
     commands.add_parser("validate", help="strictly validate every review inbox JSONL")
+    commands.add_parser("review-status", help="validate the append-only human review records")
     return parser
 
 
@@ -440,7 +640,28 @@ def main(argv: list[str] | None = None) -> int:
                     f"（{'dry-run，未写入' if result['dry_run'] else result['status']}）"
                 )
             return 0 if result["issue_count"] == 0 else 1
+        if args.command == "review":
+            result = record_review(
+                inbox_root,
+                args.event_id,
+                args.decision,
+                args.reviewer,
+                args.rationale,
+                args.reusable,
+                reviewed_at=args.reviewed_at,
+                dry_run=args.dry_run,
+            )
+            print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) if args.json else f"人工复核：{result['status']}｜{args.event_id}")
+            return 0
+        if args.command == "review-status":
+            result = validate_reviews(inbox_root)
+            print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+            return 0 if result["valid"] else 1
         result = validate_inbox(inbox_root)
+        review_result = validate_reviews(inbox_root)
+        result.update({"review_count": review_result["review_count"], "review_issue_count": review_result["issue_count"], "review_issues": review_result["issues"]})
+        if review_result["issues"]:
+            result["valid"] = False
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
         return 0 if result["valid"] else 1
     except (ReviewError, OSError, UnicodeError) as exc:
