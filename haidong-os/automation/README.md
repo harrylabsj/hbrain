@@ -22,6 +22,7 @@ Dependencies: Python 3 stdlib + zsh only.
 | `tests/test_knowledge_growth.py` | Auto-learning gate, dedupe, no-overwrite, and daily-report tests. |
 | `fact_ledger.py` | Append-only fact events, proposals, correction, query, daily projection, and validation. |
 | `project_registry.py` | Evidence-backed project current state, proposals, approval gate, rendering, and context. |
+| `project_change_compiler.py` | Stage-4 proposal-only compiler: verified dated facts advance only low-impact project evidence pointers; never applies changes. |
 | `logseq_event_compiler.py` | Explicit `compile:: yes` single-journal dry-run candidates; no formal writes. |
 | `five_domain_runtime.py` | Zero-preload domain classification, bounded context packets, and receipt inbox. |
 | `tests/test_five_domain_runtime.py` | Zero-preload, bounds, privacy, symlink, concurrency, and receipt tests. |
@@ -156,6 +157,12 @@ a symlink output leaf is refused, and the report is always marked
 `proposal_only: true` / `auto_promote: false`. Default output:
 `haidong-os/reports/five-domain-daily/YYYY-MM-DD-五域日报.md`; `--no-write` and
 `--json` supported.
+
+`project_change_compiler.py compile` reads only the selected day's formal facts
+and registered project files. It emits idempotent inbox proposals containing
+`last_fact_id` and `last_reviewed_at` only. Proposals are marked
+`proposal_only: true`, `auto_promote: false`, and `high_impact: false`.
+Use `--no-write` first; `validate` audits the proposal inbox.
 
 ## Running the tests
 
