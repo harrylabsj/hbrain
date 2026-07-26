@@ -32,6 +32,8 @@ Dependencies: Python 3 stdlib + zsh only.
 | `experience_review.py review` | Human-driven append-only review record (`accept`/`reject`/`defer`) under `experience-review/reviews/`; candidate events remain immutable and `cass_write`/`auto_promote` stay false. |
 | `experience_review.py governance` | Read-only cross-task reuse report: groups candidates by project-independent `pattern_key`, recommends a pattern for human CASS review only when the latest review is `accept`+`reusable` and it repeats across projects; writes nothing and always reports `cass_write`/`auto_promote` false. |
 | `tests/test_experience_review.py` | Date filter, no action/result leak, idempotency, concurrency, cross-month dedup, bad-JSON/secret fail-closed, symlink refusal, dry-run, validate, human-review, and governance tests. |
+| `review_state.py` | Stage-5 unified review state: bounded read-only aggregation across knowledge, experience, project, and fact domains, plus a separate append-only human decision log. |
+| `tests/test_review_state.py` | Review-state normalization, fail-closed validation, secret handling, deterministic idempotency, real concurrency, CLI, and no-domain-write tests. |
 
 ## Five-domain stage 3
 
@@ -198,6 +200,53 @@ project-independent `pattern_key` and reports `occurrence_count`,
 AND `distinct_projects >= --min-projects` (default 2). The report writes
 nothing and always carries `cass_write: false` / `auto_promote: false`; a
 recommendation is a queue for human CASS review, not a promotion.
+
+## Five-domain stage 5 (unified review state)
+
+`review_state.py report` creates one bounded review queue without loading the
+second brain into an Agent context. It reads only declared metadata sources:
+knowledge-learning rows and writeback frontmatter, experience candidates and
+reviews, project proposals and applied audit rows, and fact proposals plus
+disputed fact events. Wiki page bodies are not read. The command never calls
+Gbrain or CASS and never writes Wiki pages, project state, or fact events.
+
+```sh
+python3 review_state.py \
+  --wiki-root <llm-wiki> \
+  --experience-root <experience-review> \
+  --projects-root <projects> \
+  --facts-root <facts> \
+  --review-root <review-state> \
+  report --no-write --json
+
+python3 review_state.py \
+  --wiki-root <llm-wiki> \
+  --experience-root <experience-review> \
+  --projects-root <projects> \
+  --facts-root <facts> \
+  --review-root <review-state> \
+  validate
+```
+
+Human decisions are explicit and append-only:
+
+```sh
+python3 review_state.py \
+  --wiki-root <llm-wiki> \
+  --experience-root <experience-review> \
+  --projects-root <projects> \
+  --facts-root <facts> \
+  --review-root <review-state> \
+  review --review-item-id <rstate_...> --domain knowledge \
+  --decision defer --reviewer <name> --rationale "等待更多证据"
+```
+
+The semantic review id excludes the timestamp, so retries of the same decision
+are idempotent even when the caller omits `--reviewed-at`. Concurrent appends are
+serialized with a global file lock. A unified decision and an older domain-native
+decision are compared by their real timezone-aware `reviewed_at`; neither source
+wins merely because of its storage location. All promotion/write flags remain
+false, and invalid inputs produce an empty fail-closed report.
 
 ## Running the tests
 

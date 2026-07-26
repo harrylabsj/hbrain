@@ -136,6 +136,59 @@ class CompilerTests(unittest.TestCase):
                 compiler.compile_changes(projects, facts, compiler.dt.date(2026, 7, 25))
             self.assertIn("corrupted", str(ctx.exception))
 
+    def test_existing_proposal_valid_non_object_raises(self):
+        """Existing proposal is valid JSON but not an object → CompilerError."""
+        tmp, projects, facts = self.setup()
+        with tmp:
+            first = compiler.compile_changes(projects, facts, compiler.dt.date(2026, 7, 25))
+            self.assertEqual(first["appended"], 1)
+            proposal_path = next((projects / "inbox").glob("*.json"))
+            # Replace with valid JSON array (not a dict)
+            proposal_path.write_text("[]")
+            with self.assertRaises(compiler.CompilerError) as ctx:
+                compiler.compile_changes(projects, facts, compiler.dt.date(2026, 7, 25))
+            self.assertIn("not an object", str(ctx.exception))
+
+    def test_existing_proposal_tampered_identity_raises(self):
+        """Existing proposal with tampered identity/safety flag → CompilerError."""
+        tmp, projects, facts = self.setup()
+        with tmp:
+            first = compiler.compile_changes(projects, facts, compiler.dt.date(2026, 7, 25))
+            self.assertEqual(first["appended"], 1)
+            proposal_path = next((projects / "inbox").glob("*.json"))
+            row = json.loads(proposal_path.read_text())
+            # Tamper with safety flag: change high_impact to true
+            row["high_impact"] = True
+            proposal_path.write_text(json.dumps(row, sort_keys=True, ensure_ascii=False))
+            with self.assertRaises(compiler.CompilerError) as ctx:
+                compiler.compile_changes(projects, facts, compiler.dt.date(2026, 7, 25))
+            self.assertIn("identity mismatch", str(ctx.exception))
+
+    def test_existing_proposal_tampered_proposal_id_raises(self):
+        """Existing proposal with tampered proposal_id → CompilerError."""
+        tmp, projects, facts = self.setup()
+        with tmp:
+            first = compiler.compile_changes(projects, facts, compiler.dt.date(2026, 7, 25))
+            self.assertEqual(first["appended"], 1)
+            proposal_path = next((projects / "inbox").glob("*.json"))
+            row = json.loads(proposal_path.read_text())
+            # Tamper with identity: change project_id
+            row["project_id"] = "different-project"
+            proposal_path.write_text(json.dumps(row, sort_keys=True, ensure_ascii=False))
+            with self.assertRaises(compiler.CompilerError) as ctx:
+                compiler.compile_changes(projects, facts, compiler.dt.date(2026, 7, 25))
+            self.assertIn("identity mismatch", str(ctx.exception))
+
+    def test_normal_idempotency_unaffected_by_tamper_tests(self):
+        """Normal second-time compile still idempotent (not affected by tamper tests)."""
+        tmp, projects, facts = self.setup()
+        with tmp:
+            first = compiler.compile_changes(projects, facts, compiler.dt.date(2026, 7, 25))
+            self.assertEqual(first["appended"], 1)
+            second = compiler.compile_changes(projects, facts, compiler.dt.date(2026, 7, 25))
+            self.assertEqual(second["appended"], 0)
+            self.assertTrue(second["valid"])
+
 
 if __name__ == "__main__":
     unittest.main()

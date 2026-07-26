@@ -163,6 +163,29 @@ def compile_changes(
                 existing = json.loads(existing_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as exc:
                 raise CompilerError(f"existing proposal is corrupted: {existing_path}: {exc}")
+            if not isinstance(existing, dict):
+                raise CompilerError(f"existing proposal is not an object: {existing_path}")
+            required_identity = {
+                "proposal_id": preview["proposal_id"],
+                "project_id": preview["project_id"],
+                "changes": preview["changes"],
+                "evidence": preview["evidence"],
+                "base_hash": preview["base_hash"],
+                "schema_version": preview["schema_version"],
+                "status": preview["status"],
+                "high_impact": preview["high_impact"],
+                "proposal_only": True,
+                "auto_promote": False,
+            }
+            mismatches = [
+                key
+                for key, expected in required_identity.items()
+                if existing.get(key) != expected
+            ]
+            if mismatches:
+                raise CompilerError(
+                    f"existing proposal identity mismatch at {existing_path}: {', '.join(sorted(mismatches))}"
+                )
             output.append({**existing, "written": False})
             continue
         proposal, written = registry.propose_change(
