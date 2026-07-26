@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hbrain.local/schema/completion-receipt-v1.json",
+  "title": "Haidong Completion Receipt v1",
+  "type": "object",
+  "required": [
+    "schema_version", "receipt_id", "packet_id", "completed_at", "agent",
+    "project_id", "action", "result", "evidence", "knowledge_gap",
+    "experience_candidate", "privacy", "promotion"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "receipt_id": {"type": "string", "pattern": "^receipt_[0-9a-f]{24}$"},
+    "packet_id": {"type": "string", "pattern": "^packet_[0-9a-f]{24}$"},
+    "completed_at": {"type": "string", "format": "date-time"},
+    "agent": {"type": "string", "minLength": 1},
+    "project_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+    "action": {"type": "string", "minLength": 1},
+    "result": {"type": "string", "minLength": 1},
+    "evidence": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object", "required": ["type", "ref"],
+        "properties": {"type": {"type": "string"}, "ref": {"type": "string"}, "hash": {"type": "string"}}
+      }
+    },
+    "knowledge_gap": {"type": "array", "maxItems": 5},
+    "experience_candidate": {"type": "array", "maxItems": 5},
+    "privacy": {"enum": ["private", "sensitive", "shareable"]},
+    "promotion": {
+      "type": "object", "required": ["auto_promote", "status"],
+      "properties": {"auto_promote": {"const": false}, "status": {"const": "inbox"}}
+    }
+  }
+}

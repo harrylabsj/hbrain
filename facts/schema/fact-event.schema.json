@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hbrain.local/schema/fact-event-v1.json",
+  "title": "Haidong Fact Event v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "event_id", "occurred_at", "recorded_at", "subject",
+    "event_type", "summary", "source_ref", "actor", "confidence",
+    "verification", "privacy", "project_id", "supersedes", "refs"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "event_id": {"type": "string", "pattern": "^fact_[0-9a-f]{24}$"},
+    "occurred_at": {"type": "string", "format": "date-time"},
+    "recorded_at": {"type": "string", "format": "date-time"},
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id"],
+      "properties": {
+        "type": {"type": "string", "minLength": 1},
+        "id": {"type": "string", "minLength": 1}
+      }
+    },
+    "event_type": {"type": "string", "minLength": 1},
+    "summary": {"type": "string", "minLength": 1},
+    "source_ref": {"type": "string", "minLength": 1},
+    "actor": {"type": "string", "minLength": 1},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "verification": {
+      "enum": ["observed", "asserted", "verified", "disputed", "superseded"]
+    },
+    "privacy": {"enum": ["private", "sensitive", "shareable"]},
+    "project_id": {"type": ["string", "null"]},
+    "supersedes": {"type": ["string", "null"]},
+    "refs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["knowledge", "cass", "artifacts"],
+      "properties": {
+        "knowledge": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "cass": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "artifacts": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+      }
+    }
+  }
+}
