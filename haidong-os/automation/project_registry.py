@@ -55,6 +55,7 @@ PROJECT_FIELDS = {
     "privacy",
     "state_ref",
 }
+PROPOSAL_ANNOTATIONS = {"proposal_only", "auto_promote", "source"}
 
 
 class RegistryError(Exception):
@@ -298,6 +299,7 @@ def propose_change(
     project_id: str,
     changes: dict[str, Any],
     ref: dict[str, str | None],
+    annotations: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], bool]:
     current = load_project(root, project_id, facts_root)
     if not isinstance(changes, dict) or not changes:
@@ -327,6 +329,18 @@ def propose_change(
         "status": "proposed",
         "high_impact": bool(set(changes) & HIGH_IMPACT),
     }
+    if annotations is not None:
+        if not isinstance(annotations, dict):
+            raise RegistryError("annotations must be an object")
+        extra = sorted(set(annotations) - PROPOSAL_ANNOTATIONS)
+        if extra:
+            raise RegistryError("unsupported annotation keys: " + ", ".join(extra))
+        for key in ("proposal_only", "auto_promote"):
+            if key in annotations and not isinstance(annotations[key], bool):
+                raise RegistryError(f"{key} annotation must be a boolean")
+        if "source" in annotations and not isinstance(annotations["source"], dict):
+            raise RegistryError("source annotation must be an object")
+        proposal.update(annotations)
     path = root / "inbox" / f"{proposal['proposal_id']}.json"
     lock = locked(root)
     try:

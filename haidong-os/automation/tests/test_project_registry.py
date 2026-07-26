@@ -255,5 +255,81 @@ class ProjectRegistryTests(unittest.TestCase):
             self.assertEqual(result["project_count"], 12)
 
 
+    def test_propose_change_annotations_whitelist_and_types(self):
+        """Annotations must use PROPOSAL_ANNOTATIONS keys with correct types."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            projects, facts = root / "projects", root / "facts"
+            self.init(projects, facts)
+            evidence = {"fact_id": None, "decision_ref": "decision:ann"}
+            changes = {"next_action": "annotations test"}
+            # Unknown annotation key
+            with self.assertRaises(registry.RegistryError) as ctx:
+                registry.propose_change(
+                    projects, facts, "hbrain", changes, evidence,
+                    annotations={"bad_key": True},
+                )
+            self.assertIn("unsupported annotation keys", str(ctx.exception))
+            # proposal_only must be boolean
+            with self.assertRaises(registry.RegistryError) as ctx:
+                registry.propose_change(
+                    projects, facts, "hbrain", changes, evidence,
+                    annotations={"proposal_only": "yes"},
+                )
+            self.assertIn("proposal_only", str(ctx.exception))
+            # auto_promote must be boolean
+            with self.assertRaises(registry.RegistryError) as ctx:
+                registry.propose_change(
+                    projects, facts, "hbrain", changes, evidence,
+                    annotations={"auto_promote": 1},
+                )
+            self.assertIn("auto_promote", str(ctx.exception))
+            # source must be an object
+            with self.assertRaises(registry.RegistryError) as ctx:
+                registry.propose_change(
+                    projects, facts, "hbrain", changes, evidence,
+                    annotations={"source": "not-an-object"},
+                )
+            self.assertIn("source annotation", str(ctx.exception))
+
+    def test_propose_change_duplicate_calls_are_idempotent(self):
+        """Same changes proposed twice: second call idempotent, no collision."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            projects, facts = root / "projects", root / "facts"
+            self.init(projects, facts)
+            changes = {"next_action": "Same action twice"}
+            evidence = {"fact_id": None, "decision_ref": "decision:dup"}
+            first, first_written = registry.propose_change(
+                projects, facts, "hbrain", changes, evidence)
+            self.assertTrue(first_written)
+            second, second_written = registry.propose_change(
+                projects, facts, "hbrain", changes, evidence)
+            self.assertFalse(second_written)
+            self.assertEqual(first["proposal_id"], second["proposal_id"])
+
+    def test_concurrent_propose_change_with_same_changes_is_idempotent(self):
+        """Concurrent identical proposals: exactly one writes, no collision."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            projects, facts = root / "projects", root / "facts"
+            self.init(projects, facts)
+            changes = {"next_action": "Concurrent idempotent"}
+            evidence = {"fact_id": None, "decision_ref": "decision:concurrent"}
+
+            def propose(_):
+                return registry.propose_change(
+                    projects, facts, "hbrain", changes, evidence)
+
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                results = list(pool.map(propose, range(8)))
+
+            self.assertEqual(len(results), 8)
+            written = sum(1 for _, w in results if w)
+            self.assertEqual(written, 1, "exactly one concurrent call wins the write")
+            proposal_ids = {p["proposal_id"] for p, _ in results}
+            self.assertEqual(len(proposal_ids), 1, "all calls produce the same proposal_id")
+
+
 if __name__ == "__main__":
     unittest.main()

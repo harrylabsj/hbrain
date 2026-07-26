@@ -88,7 +88,12 @@ def stable_id(prefix: str, value: Any) -> str:
 
 
 def day_of(value: Any) -> str | None:
-    """Tolerant RFC3339 -> YYYY-MM-DD; None for unparseable values."""
+    """Tolerant RFC3339 -> YYYY-MM-DD; None for unparseable values.
+
+    Aware datetimes are converted to local time first so the reported calendar
+    day matches the wall-clock day in the runtime's local zone. Naive datetimes
+    keep their existing calendar date (fail-open for legacy data).
+    """
     if not isinstance(value, str) or not value.strip():
         return None
     text = value.strip()
@@ -98,7 +103,23 @@ def day_of(value: Any) -> str | None:
         parsed = dt.datetime.fromisoformat(text)
     except ValueError:
         return None
+    if parsed.tzinfo is not None and parsed.tzinfo.utcoffset(parsed) is not None:
+        parsed = parsed.astimezone()
     return parsed.date().isoformat()
+
+
+def parse_rfc3339(value: str) -> dt.datetime:
+    """Parse an RFC3339 string and return a timezone-aware datetime.
+
+    Raises ValueError for malformed input or for naive datetimes (no offset).
+    """
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    parsed = dt.datetime.fromisoformat(text)
+    if parsed.tzinfo is None or parsed.tzinfo.utcoffset(parsed) is None:
+        raise ValueError("timestamp is naive")
+    return parsed
 
 
 def parse_for_date(value: str | None) -> dt.date:
@@ -455,6 +476,10 @@ def build_review(
     reusable: bool,
     reviewed_at: str,
 ) -> dict[str, Any]:
+    try:
+        parse_rfc3339(reviewed_at)
+    except ValueError as exc:
+        raise ReviewError(f"reviewed_at must be timezone-aware RFC3339: {exc}") from exc
     value = {
         "schema_version": SCHEMA_VERSION,
         "event_id": event_id,
@@ -480,9 +505,9 @@ def append_review(inbox_root: Path, review: dict[str, Any]) -> bool:
         raise ReviewError("experience-review reviews directory must not be a symlink")
     reviewed_at = review["reviewed_at"]
     try:
-        month = dt.datetime.fromisoformat(reviewed_at.replace("Z", "+00:00")).strftime("%Y-%m")
+        month = parse_rfc3339(reviewed_at).strftime("%Y-%m")
     except ValueError as exc:
-        raise ReviewError("reviewed_at must be RFC3339") from exc
+        raise ReviewError("reviewed_at must be timezone-aware RFC3339") from exc
     path = reviews / f"{month}.jsonl"
     if path.is_symlink():
         raise ReviewError(f"review month file must not be a symlink: {path}")
@@ -569,9 +594,9 @@ def validate_review(review: Any, candidates: set[str]) -> list[str]:
     if review["cass_recommendation"] is not (review["decision"] == "accept" and review["reusable"]):
         errors.append("cass_recommendation does not match decision/reusable")
     try:
-        dt.datetime.fromisoformat(review["reviewed_at"].replace("Z", "+00:00"))
+        parse_rfc3339(review["reviewed_at"])
     except (AttributeError, ValueError):
-        errors.append("reviewed_at must be RFC3339")
+        errors.append("reviewed_at must be timezone-aware RFC3339")
     if not errors and review["review_id"] != review_id(review):
         errors.append("review_id does not match deterministic identity")
     return errors
@@ -648,15 +673,14 @@ def read_review_records(inbox_root: Path) -> list[dict[str, Any]]:
 def review_time_key(review: dict[str, Any]) -> tuple[int, Any, str]:
     """Sort key for "latest review". ``reviewed_at`` is parsed to an aware
     datetime so mixed RFC3339 offsets (+08:00 vs Z) compare by real time,
-    not lexicographically; unparseable values sort first (validate is the
-    strict checker). ``review_id`` is the deterministic tie-break."""
+    not lexicographically. Unparseable or naive values sort first (validate
+    is the strict checker), avoiding the TypeError that mixing naive and
+    aware datetimes would otherwise raise. ``review_id`` is the deterministic
+    tie-break."""
     stamp = review.get("reviewed_at")
     if isinstance(stamp, str):
-        text = stamp.strip()
-        if text.endswith("Z"):
-            text = text[:-1] + "+00:00"
         try:
-            return (1, dt.datetime.fromisoformat(text), str(review.get("review_id", "")))
+            return (1, parse_rfc3339(stamp), str(review.get("review_id", "")))
         except ValueError:
             pass
     return (0, stamp if isinstance(stamp, str) else "", str(review.get("review_id", "")))

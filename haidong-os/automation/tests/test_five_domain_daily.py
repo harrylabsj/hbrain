@@ -160,11 +160,11 @@ class FiveDomainDailyTests(unittest.TestCase):
         )
         write_jsonl(
             self.facts / "events" / "2026-07.jsonl",
-            [{"event_id": "fact_july24", "occurred_at": "2026-07-24T23:00:00+00:00", "summary": "七月24日事实", "source_ref": "t", "verification": "observed"}],
+            [{"event_id": "fact_july24", "occurred_at": "2026-07-24T00:00:00+00:00", "summary": "七月24日事实", "source_ref": "t", "verification": "observed"}],
         )
         write_jsonl(
             self.receipts / "inbox" / "2026-07.jsonl",
-            [{"receipt_id": "receipt_old", "completed_at": "2026-07-24T10:00:00+00:00", "experience_candidate": ["旧经验"], "knowledge_gap": [], "evidence": []}],
+            [{"receipt_id": "receipt_old", "completed_at": "2026-07-24T00:00:00+00:00", "experience_candidate": ["旧经验"], "knowledge_gap": [], "evidence": []}],
         )
         text, payload = self.build()
         self.assertEqual(payload["domains"]["facts"]["events"], 0)
@@ -269,6 +269,32 @@ class FiveDomainDailyTests(unittest.TestCase):
         self.assertEqual(target.read_text(encoding="utf-8"), "safe\n")
         with self.assertRaises(fdd.DailyError):
             fdd.atomic_write_report(output, "x")
+
+    def test_cli_rejects_symlink_input_roots(self):
+        """Each input root (wiki, facts, projects, receipts) is refused when symlinked."""
+        self.seed_all_domains()
+        unused = Path(self.temp.name) / "unused" / "out.md"
+        for label, attr in (("--wiki-root", "wiki"), ("--facts-root", "facts"),
+                             ("--projects-root", "projects"), ("--receipts-root", "receipts")):
+            target = Path(self.temp.name) / f"real_{attr}"
+            getattr(self, attr).rename(target)
+            link = Path(self.temp.name) / f"link_{attr}"
+            link.symlink_to(target, target_is_directory=True)
+            code, _ = self.run_cli(
+                "--for-date", "2026-07-25",
+                "--report-date", "2026-07-26",
+                "--wiki-root", str(link if label == "--wiki-root" else target),
+                "--facts-root", str(link if label == "--facts-root" else target),
+                "--projects-root", str(link if label == "--projects-root" else target),
+                "--receipts-root", str(link if label == "--receipts-root" else target),
+                "--output", str(unused),
+                "--no-write",
+            )
+            self.assertEqual(code, 2,
+                             f"{label} symlink must be rejected (exit 2)")
+            # Restore the real dir for the next iteration.
+            link.unlink()
+            target.rename(getattr(self, attr))
 
 
 if __name__ == "__main__":

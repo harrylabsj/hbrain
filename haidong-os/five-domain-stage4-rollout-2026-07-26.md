@@ -3,7 +3,7 @@ title: 五域架构阶段 4 日报与学习桥接入报告
 created: 2026-07-26
 updated: 2026-07-26
 type: implementation-report
-status: canary
+status: completed
 tags: [haidong-os, five-domain, daily-report, learning-bridge]
 ---
 
@@ -36,21 +36,25 @@ tags: [haidong-os, five-domain, daily-report, learning-bridge]
 
 ## 验收证据
 
-- 五域日报专项 8 项、经验队列专项 35 项；完整自动化测试 137 项通过。
+- 五域日报专项 8 项、经验队列专项 35 项；完整自动化测试 146/146 通过。
 - 首份当日 canary：[2026-07-26 五域日报](reports/five-domain-daily/2026-07-26-五域日报.md)。
 - canary 最新重建汇总：正式事实 8、项目变化 7、知识候选 1、知识调用 16、知识缺口 9、证据 21、经验候选 1。
 - 数据问题 0，秘密脱敏 0，未发生自动晋升。
-- Claude-Kimi 完成实现和自审；Codex App 独立复跑完整测试及真实数据 dry-run/write canary。
+- 分工：Claude-Kimi 完成阶段 4 实现与修正；Claude-DS 独立回归完整测试 146/146 通过；Kimi Code 最终复审 APPROVE；Codex App 独立复跑完整测试及真实数据 dry-run/write canary。
 - 经验候选正式 inbox：1 条事件、0 个问题；重复编译新增 0，幂等通过。
 - `automation-daily.zsh` 真实路径 dry-run：7 个步骤全部 `planned`、`attempts=0`、无 history，确认未执行维护或 Gbrain。
 - 首次真实前一日 daily runner 已完成：7/7 步骤 `ok`，history=`/Users/jianghaidong/.hermes/state/hbrain-automation/history/daily/20260726T075333-8f8e04d8.json`；经验候选 0、新增项目提案 0、日报数据问题 0，Gbrain sync/embed/health 均成功。
 
 ## 当前状态
 
-阶段 4 继续处于 canary。五域日报、经验候选待审队列、daily runner 编排、事实到低影响项目提案编译器、首次真实前一日运行观察和人工复核状态最小切片已经完成；尚未建立多次现实验证后进入知识/CASS 写回闸门的晋升流程。
+阶段 4 功能与治理验收完成。五域日报、经验候选待审队列、daily runner 编排、事实到低影响项目提案编译器、首次真实前一日运行观察和人工复核状态最小切片均已验收。
+
+保留未解决但非阻断风险：
+
+- 多周无人值守样本不足。
+- 真实 stale-lock 崩溃恢复未观察。
+- `existing_proposal` 快路径只验证 JSON 可解析且合法非对象错误，需阶段 5 加固。
 
 ## 下一步
 
-1. 复核 `project_change_compiler.py` 生成的低影响提案，不自动应用高影响字段。
-2. 观察人工复核记录的重复、跨任务复用证据；只有满足条件时才建议进入 CASS。
-3. 为知识/经验晋升建立统一 review 状态，不直接写规范知识或成熟 playbook。
+阶段 5 首个最小切片：统一 Review State 只读 / append-only 汇总，知识 / 经验 / 项目 / 事实各自仍保留人工晋升闸门，不自动写 Wiki / CASS / 高影响状态。

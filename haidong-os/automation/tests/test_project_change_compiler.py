@@ -98,5 +98,44 @@ class CompilerTests(unittest.TestCase):
                 compiler.compile_changes(linked, facts, compiler.dt.date(2026, 7, 25), no_write=True)
 
 
+    def test_bad_fact_json_fails_closed_and_cli_nonzero(self):
+        """Bad fact JSON → valid=false, appended=0, CLI exit 1."""
+        import contextlib
+        import io
+        tmp, projects, facts = self.setup()
+        with tmp:
+            path = facts / "events" / "2026-07.jsonl"
+            valid = path.read_text().strip()
+            path.write_text(valid + "\n" + "{this is not valid json\n")
+            # Programmatic: valid=False, nothing written
+            result = compiler.compile_changes(projects, facts, compiler.dt.date(2026, 7, 25))
+            self.assertFalse(result["valid"], "bad JSON must produce valid=false")
+            self.assertEqual(result["appended"], 0)
+            self.assertGreaterEqual(len(result["issues"]), 1)
+            self.assertIn("invalid_json", result["issues"][0]["issue"])
+            # CLI: non-zero exit
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                rc = compiler.main([
+                    "--facts-root", str(facts),
+                    "--projects-root", str(projects),
+                    "--for-date", "2026-07-25",
+                    "compile",
+                ])
+            self.assertEqual(rc, 1, "CLI must exit non-zero for bad fact JSON")
+
+    def test_corrupted_existing_proposal_returns_clear_error(self):
+        """Corrupt existing proposal file → CompilerError with 'corrupted'."""
+        tmp, projects, facts = self.setup()
+        with tmp:
+            first = compiler.compile_changes(projects, facts, compiler.dt.date(2026, 7, 25))
+            self.assertEqual(first["appended"], 1)
+            proposal_path = next((projects / "inbox").glob("*.json"))
+            proposal_path.write_text("{this is broken")
+            with self.assertRaises(compiler.CompilerError) as ctx:
+                compiler.compile_changes(projects, facts, compiler.dt.date(2026, 7, 25))
+            self.assertIn("corrupted", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

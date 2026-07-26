@@ -57,7 +57,12 @@ def parse_date(value: str | None, default: dt.date | None = None) -> dt.date:
 
 
 def day_of(value: Any) -> str | None:
-    """Tolerant RFC3339 -> YYYY-MM-DD; returns None for unparseable values."""
+    """Tolerant RFC3339 -> YYYY-MM-DD; returns None for unparseable values.
+
+    Aware datetimes are converted to local time first so the reported calendar
+    day matches the wall-clock day in the runtime's local zone. Naive datetimes
+    keep their existing calendar date (fail-open for legacy data).
+    """
     if not isinstance(value, str) or not value.strip():
         return None
     text = value.strip()
@@ -67,6 +72,8 @@ def day_of(value: Any) -> str | None:
         parsed = dt.datetime.fromisoformat(text)
     except ValueError:
         return None
+    if parsed.tzinfo is not None and parsed.tzinfo.utcoffset(parsed) is not None:
+        parsed = parsed.astimezone()
     return parsed.date().isoformat()
 
 
@@ -399,13 +406,25 @@ def main(argv: list[str] | None = None) -> int:
     try:
         generated = parse_date(args.report_date)
         day = parse_date(args.for_date, generated - dt.timedelta(days=1))
+        wiki_root = args.wiki_root.expanduser().absolute()
+        facts_root = args.facts_root.expanduser().absolute()
+        projects_root = args.projects_root.expanduser().absolute()
+        receipts_root = args.receipts_root.expanduser().absolute()
+        for label, root in (
+            ("wiki-root", wiki_root),
+            ("facts-root", facts_root),
+            ("projects-root", projects_root),
+            ("receipts-root", receipts_root),
+        ):
+            if root.is_symlink():
+                raise DailyError(f"{label} must not be a symlink: {root}")
         text, payload = build_report(
             day=day,
             generated=generated,
-            wiki_root=args.wiki_root.expanduser().resolve(),
-            facts_root=args.facts_root.expanduser().resolve(),
-            projects_root=args.projects_root.expanduser().resolve(),
-            receipts_root=args.receipts_root.expanduser().resolve(),
+            wiki_root=wiki_root,
+            facts_root=facts_root,
+            projects_root=projects_root,
+            receipts_root=receipts_root,
         )
         output = (
             Path(args.output).expanduser()

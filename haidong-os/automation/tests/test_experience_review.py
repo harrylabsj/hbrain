@@ -441,6 +441,52 @@ class ExperienceReviewTests(unittest.TestCase):
         self.assertFalse(result["valid"])
         self.assertIn("cass_write must be false", json.dumps(result["issues"]))
 
+    def test_naive_reviewed_at_rejected_by_record_review(self):
+        """record_review raises ReviewError when reviewed_at is naive (no tz)."""
+        self.write_receipts([make_receipt("receipt_" + "a" * 24)])
+        self.compile()
+        event_id = self.all_events()[0]["event_id"]
+        with self.assertRaises(er.ReviewError) as ctx:
+            er.record_review(self.inbox_root, event_id, "accept", "owner",
+                             "naive timestamp", True,
+                             reviewed_at="2026-07-26T08:00:00")
+        self.assertIn("timezone-aware", str(ctx.exception))
+
+    def test_review_time_key_mixed_naive_aware_does_not_typeerror(self):
+        """Mix of naive and aware reviewed_at in latest_review never TypeErrors."""
+        reviews = [
+            {"reviewed_at": "2026-07-26T02:00:00+00:00", "review_id": "r_aware"},
+            {"reviewed_at": "2026-07-26T00:00:00", "review_id": "r_naive"},
+        ]
+        latest = er.latest_review(reviews)
+        self.assertIsNotNone(latest)
+        # Aware timestamp has larger sort key → latest. No TypeError from mixing types.
+        self.assertEqual(latest["review_id"], "r_aware")
+
+    def test_day_of_aware_datetime_converts_to_local_time(self):
+        """day_of converts aware datetimes to the local calendar day via astimezone()."""
+        from datetime import datetime, timezone
+        # None/empty → None
+        self.assertIsNone(er.day_of(None))
+        self.assertIsNone(er.day_of(""))
+        # Naive keeps existing calendar day.
+        self.assertEqual(er.day_of("2026-07-25T23:00:00"), "2026-07-25")
+        # Aware: expected result depends on system local tz, compute dynamically.
+        dt_2300utc = datetime(2026, 7, 25, 23, 0, 0, tzinfo=timezone.utc)
+        dt_0600utc = datetime(2026, 7, 25, 6, 0, 0, tzinfo=timezone.utc)
+        self.assertEqual(
+            er.day_of("2026-07-25T23:00:00+00:00"),
+            dt_2300utc.astimezone().date().isoformat(),
+        )
+        self.assertEqual(
+            er.day_of("2026-07-25T23:00:00Z"),
+            dt_2300utc.astimezone().date().isoformat(),
+        )
+        self.assertEqual(
+            er.day_of("2026-07-25T06:00:00+00:00"),
+            dt_0600utc.astimezone().date().isoformat(),
+        )
+
 
     # -- governance report --------------------------------------------------
 

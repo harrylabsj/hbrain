@@ -39,7 +39,10 @@ def day_of(value: Any) -> str | None:
         return None
     text = value.strip().replace("Z", "+00:00")
     try:
-        return dt.datetime.fromisoformat(text).date().isoformat()
+        parsed = dt.datetime.fromisoformat(text)
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone()
+        return parsed.date().isoformat()
     except ValueError:
         return None
 
@@ -116,8 +119,23 @@ def compile_changes(
 ) -> dict[str, Any]:
     issues: list[dict[str, Any]] = []
     registered = projects(projects_root, facts_root)
+    events = read_events(facts_root, day, issues)
+    if issues:
+        return {
+            "schema_version": 1,
+            "command": "compile",
+            "for_date": day.isoformat(),
+            "proposal_only": True,
+            "auto_promote": False,
+            "dry_run": no_write,
+            "valid": False,
+            "candidates": 0,
+            "appended": 0,
+            "issues": issues,
+            "proposals": [],
+        }
     latest: dict[str, dict[str, Any]] = {}
-    for fact in read_events(facts_root, day, issues):
+    for fact in events:
         project_id = fact.get("project_id")
         if not isinstance(project_id, str) or project_id not in registered:
             continue
@@ -135,12 +153,16 @@ def compile_changes(
         if project.get("last_fact_id") == fact.get("event_id") and project.get("last_reviewed_at") == day.isoformat():
             continue
         preview = candidate(project, fact, day)
+        annotations = {"proposal_only": True, "auto_promote": False, "source": preview["source"]}
         if no_write:
-            output.append(preview)
+            output.append({**preview, "written": False})
             continue
         existing_path = projects_root / "inbox" / f"{preview['proposal_id']}.json"
         if existing_path.is_file() and not existing_path.is_symlink():
-            existing = json.loads(existing_path.read_text(encoding="utf-8"))
+            try:
+                existing = json.loads(existing_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise CompilerError(f"existing proposal is corrupted: {existing_path}: {exc}")
             output.append({**existing, "written": False})
             continue
         proposal, written = registry.propose_change(
@@ -149,13 +171,8 @@ def compile_changes(
             project_id,
             preview["changes"],
             preview["evidence"],
+            annotations=annotations,
         )
-        proposal.update({"proposal_only": True, "auto_promote": False, "source": preview["source"]})
-        # Existing registry writes the canonical proposal atomically. Add the
-        # explicit safety flags only to the same proposal file, never to project state.
-        path = projects_root / "inbox" / f"{proposal['proposal_id']}.json"
-        if written:
-            registry.atomic_write(path, registry.pretty_json(proposal))
         output.append({**proposal, "written": written})
     return {
         "schema_version": 1,
@@ -164,6 +181,7 @@ def compile_changes(
         "proposal_only": True,
         "auto_promote": False,
         "dry_run": no_write,
+        "valid": True,
         "candidates": len(output),
         "appended": sum(1 for row in output if row.get("written")),
         "issues": issues,
