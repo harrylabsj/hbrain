@@ -36,6 +36,8 @@ tags: [haidong-os, five-domain, review-state, human-gate]
 - `git diff --check` 通过。
 - 真实 Hbrain 只读 canary：报告有效，得到 3 个待审条目和 3 条建议，无文件写入。
 - 严格 validate 首次识别到一条历史 knowledge-learning 元数据缺少 `schema_version`；完成最小 schema 迁移后复验 `valid=true`、0 issues。
+- 首次完整人工复核 canary 发现：已写入 `audit/applied.jsonl` 的项目提案仍以 inbox 副本重复进入待审队列。现已改为先按 `proposal_id` 全量归一、核对 `project_id` 与 `changes`，再执行条目限额；默认报告抑制已应用副本，`--include-closed` 只保留一条 applied 记录，身份冲突则 fail closed。
+- Claude-DS 为真实 canary 修复新增 5 项专项测试，修复后完整真实队列由错误的 13 项收敛为 5 项：知识 2、经验 1、项目 2；0 issues、无领域写入。
 
 ## 当前状态与下一步
 

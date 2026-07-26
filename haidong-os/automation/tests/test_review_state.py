@@ -414,6 +414,154 @@ class TestReviewState(unittest.TestCase):
             self.assertGreater(len(issues), 0)
 
     # ==================================================================
+    # 3b. Project: applied audit dedup / conflict / limit ordering
+    # ==================================================================
+
+    def test_project_applied_suppresses_inbox_default(self) -> None:
+        """Same proposal_id in inbox and applied: default report suppresses inbox copy."""
+        with tempfile.TemporaryDirectory() as tmp:
+            roots = self._make_roots(tmp)
+            (roots["projects_root"] / "inbox").mkdir(parents=True)
+            (roots["projects_root"] / "audit").mkdir(parents=True)
+
+            # Inbox proposal
+            (roots["projects_root"] / "inbox" / "project_change_p1.json").write_text(
+                json.dumps(project_proposal_dict(
+                    proposal_id="prop-dedup", project_id="proj-X",
+                    changes={"f1.py": "modify"},
+                ), sort_keys=True)
+            )
+            # Applied audit for the same proposal_id (same identity)
+            (roots["projects_root"] / "audit" / "applied.jsonl").write_text(
+                applied_audit_jsonl(
+                    proposal_id="prop-dedup", project_id="proj-X",
+                    changes={"f1.py": "modify"},
+                )
+            )
+
+            report = build_report(**roots)  # include_closed=False (default)
+            self.assertTrue(report["valid"])
+            prop_ids = {i["review_item_id"] for i in report["items"]}
+            self.assertNotIn("prop-dedup", prop_ids,
+                             "applied proposal must not appear in default (open-only) report")
+
+    def test_project_applied_with_include_closed(self) -> None:
+        """include_closed=True shows single applied entry for a proposal in both inbox+audit."""
+        with tempfile.TemporaryDirectory() as tmp:
+            roots = self._make_roots(tmp)
+            (roots["projects_root"] / "inbox").mkdir(parents=True)
+            (roots["projects_root"] / "audit").mkdir(parents=True)
+
+            (roots["projects_root"] / "inbox" / "project_change_p1.json").write_text(
+                json.dumps(project_proposal_dict(
+                    proposal_id="prop-uniq", project_id="proj-Y",
+                    changes={"g.txt": "add"},
+                ), sort_keys=True)
+            )
+            (roots["projects_root"] / "audit" / "applied.jsonl").write_text(
+                applied_audit_jsonl(
+                    proposal_id="prop-uniq", project_id="proj-Y",
+                    changes={"g.txt": "add"},
+                )
+            )
+
+            report = build_report(**roots, include_closed=True)
+            self.assertTrue(report["valid"])
+            prop_items = [i for i in report["items"] if i["review_item_id"] == "prop-uniq"]
+            self.assertEqual(len(prop_items), 1,
+                             "prop-uniq must appear exactly once with include_closed=True")
+            self.assertEqual(prop_items[0]["domain_status"], "applied")
+            self.assertIs(prop_items[0]["review_required"], False)
+
+    def test_project_applied_conflict_different_project_id(self) -> None:
+        """Same proposal_id but different project_id between inbox and audit fails closed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            roots = self._make_roots(tmp)
+            (roots["projects_root"] / "inbox").mkdir(parents=True)
+            (roots["projects_root"] / "audit").mkdir(parents=True)
+
+            (roots["projects_root"] / "inbox" / "project_change_c1.json").write_text(
+                json.dumps(project_proposal_dict(
+                    proposal_id="prop-conflict", project_id="proj-A",
+                ), sort_keys=True)
+            )
+            # Audit says project_id="proj-B" — conflicts with inbox
+            (roots["projects_root"] / "audit" / "applied.jsonl").write_text(
+                applied_audit_jsonl(
+                    proposal_id="prop-conflict", project_id="proj-B",
+                )
+            )
+
+            report = build_report(**roots)
+            self.assertFalse(report["valid"])
+            self.assertEqual(len(report["items"]), 0)
+            conflict_issues = [i for i in report["issues"] if "conflicting" in i["issue"].lower()]
+            self.assertGreater(len(conflict_issues), 0,
+                               "conflict must produce an issue")
+            # Message must not leak actual values
+            self.assertNotIn("proj-A", " ".join(str(i) for i in conflict_issues))
+            self.assertNotIn("proj-B", " ".join(str(i) for i in conflict_issues))
+
+    def test_project_applied_conflict_different_changes(self) -> None:
+        """Same proposal_id but different changes between inbox and audit fails closed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            roots = self._make_roots(tmp)
+            (roots["projects_root"] / "inbox").mkdir(parents=True)
+            (roots["projects_root"] / "audit").mkdir(parents=True)
+
+            (roots["projects_root"] / "inbox" / "project_change_c2.json").write_text(
+                json.dumps(project_proposal_dict(
+                    proposal_id="prop-chg", project_id="proj-A",
+                    changes={"old.py": "modify"},
+                ), sort_keys=True)
+            )
+            # Audit says different changes — conflicts with inbox
+            (roots["projects_root"] / "audit" / "applied.jsonl").write_text(
+                applied_audit_jsonl(
+                    proposal_id="prop-chg", project_id="proj-A",
+                    changes={"new.py": "delete"},
+                )
+            )
+
+            report = build_report(**roots)
+            self.assertFalse(report["valid"])
+            self.assertEqual(len(report["items"]), 0)
+            conflict_issues = [i for i in report["issues"] if "conflicting" in i["issue"].lower()]
+            self.assertGreater(len(conflict_issues), 0,
+                               "conflict must produce an issue")
+
+    def test_project_applied_limit_dedup_order(self) -> None:
+        """Limit is applied after dedup: applied items suppress inbox even with tight limit."""
+        with tempfile.TemporaryDirectory() as tmp:
+            roots = self._make_roots(tmp)
+            (roots["projects_root"] / "inbox").mkdir(parents=True)
+            (roots["projects_root"] / "audit").mkdir(parents=True)
+
+            # Three inbox proposals: prop-A, prop-B, prop-C
+            for pid in ("prop-A", "prop-B", "prop-C"):
+                (roots["projects_root"] / "inbox" / f"project_change_{pid}.json").write_text(
+                    json.dumps(project_proposal_dict(
+                        proposal_id=pid, project_id=f"proj-{pid}",
+                        changes={"f.py": "modify"},
+                    ), sort_keys=True)
+                )
+            # Applied audit for prop-B (same identity)
+            (roots["projects_root"] / "audit" / "applied.jsonl").write_text(
+                applied_audit_jsonl(
+                    proposal_id="prop-B", project_id="proj-prop-B",
+                    changes={"f.py": "modify"},
+                )
+            )
+
+            # max_items=3 is just enough to cause the bug without dedup:
+            # prop-B(inbox) slips through when limit trims prop-C
+            report = build_report(**roots, max_items=3)  # include_closed=False
+            self.assertTrue(report["valid"])
+            item_ids = {i["review_item_id"] for i in report["items"]}
+            self.assertNotIn("prop-B", item_ids,
+                             "prop-B is applied and must not appear as pending even with tight limit")
+
+    # ==================================================================
     # 4. Fact: inbox proposals + disputed events
     # ==================================================================
 

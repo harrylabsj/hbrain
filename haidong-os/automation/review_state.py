@@ -451,41 +451,66 @@ def experience_items(experience_root: Path, issues: list[dict[str, Any]], limit:
 
 
 def project_items(projects_root: Path, issues: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    """Project domain items — inbox proposals + applied audit, deduped by proposal_id.
+
+    Inbox proposals and applied audit entries share the same ``proposal_id``.
+    This function deduplicates them so that:
+
+    * When a ``proposal_id`` appears in a **valid** applied audit, the inbox
+      copy is suppressed — the applied audit entry is authoritative.
+
+    * Conflict detection: if the same ``proposal_id`` carries a different
+      ``project_id`` or ``changes`` between the inbox proposal and the applied
+      audit, an issue is raised (fail closed) and **both** copies are excluded.
+      The issue message does not leak which field differs or the actual values.
+
+    * Dedup completes **before** the ``limit`` is applied, so a tight limit
+      cannot truncate an applied entry while letting its inbox copy slip through.
+
+    * A bad audit (``applied.jsonl``) still fails closed with existing
+      validation logic.
+    """
     ensure_safe_root(projects_root)
     scan_symlinks(projects_root, ["inbox", "audit"], issues)
-    items: list[dict[str, Any]] = []
+
+    # Phase 1 — index inbox proposals by proposal_id.
+    inbox_by_pid: dict[str, dict[str, Any]] = {}
+    inbox_sigs: dict[str, tuple[str, str]] = {}  # (project_id, canonical-changes)
     inbox_dir = projects_root / "inbox"
     for path, row in iter_json(inbox_dir, issues):
-        if path.name.startswith("project_change_"):
-            proposal_id = row.get("proposal_id")
-            project_id = row.get("project_id")
-            if not isinstance(proposal_id, str) or not isinstance(project_id, str):
-                issues.append({"path": str(path), "line": None, "issue": "missing proposal_id or project_id"})
-                continue
-            for issue in validate_no_secrets({k: row.get(k) for k in ("changes", "evidence")}):
-                issues.append({"path": str(path), "line": None, "issue": issue})
-                break
-            else:
-                items.append(
-                    {
-                        "review_item_id": proposal_id,
-                        "domain": "project",
-                        "source_id": proposal_id,
-                        "source_ref": project_id,
-                        "title": safe_text(f"{project_id}: {sorted((row.get('changes') or {}).keys())}", MAX_LINE_CHARS),
-                        "summary": safe_text(row.get("changes"), MAX_LINE_CHARS),
-                        "domain_status": str(row.get("status", "proposed")),
-                        "latest_review": None,
-                        "review_required": True,
-                        "evidence_refs": evidence_refs_from(row.get("evidence")),
-                        "auto_promote": False,
-                        "wiki_write": False,
-                        "cass_write": False,
-                        "project_apply": False,
-                        "fact_append": False,
-                    }
-                )
+        if not path.name.startswith("project_change_"):
+            continue
+        proposal_id = row.get("proposal_id")
+        project_id = row.get("project_id")
+        if not isinstance(proposal_id, str) or not isinstance(project_id, str):
+            issues.append({"path": str(path), "line": None, "issue": "missing proposal_id or project_id"})
+            continue
+        for issue in validate_no_secrets({k: row.get(k) for k in ("changes", "evidence")}):
+            issues.append({"path": str(path), "line": None, "issue": issue})
+            break
+        else:
+            inbox_by_pid[proposal_id] = {
+                "review_item_id": proposal_id,
+                "domain": "project",
+                "source_id": proposal_id,
+                "source_ref": project_id,
+                "title": safe_text(f"{project_id}: {sorted((row.get('changes') or {}).keys())}", MAX_LINE_CHARS),
+                "summary": safe_text(row.get("changes"), MAX_LINE_CHARS),
+                "domain_status": str(row.get("status", "proposed")),
+                "latest_review": None,
+                "review_required": True,
+                "evidence_refs": evidence_refs_from(row.get("evidence")),
+                "auto_promote": False,
+                "wiki_write": False,
+                "cass_write": False,
+                "project_apply": False,
+                "fact_append": False,
+            }
+            inbox_sigs[proposal_id] = (project_id, canonical_json(row.get("changes", {})))
 
+    # Phase 2 — process applied audit with conflict detection.
+    applied_ids: set[str] = set()
+    applied_items: list[dict[str, Any]] = []
     audit_path = projects_root / "audit" / "applied.jsonl"
     if audit_path.exists():
         if audit_path.is_symlink() or not audit_path.is_file():
@@ -508,25 +533,44 @@ def project_items(projects_root: Path, issues: list[dict[str, Any]], limit: int)
                     if not isinstance(proposal_id, str) or not isinstance(project_id, str):
                         issues.append({"path": str(audit_path), "line": line_number, "issue": "missing proposal_id or project_id"})
                         continue
-                    items.append(
-                        {
-                            "review_item_id": proposal_id,
-                            "domain": "project",
-                            "source_id": proposal_id,
-                            "source_ref": project_id,
-                            "title": safe_text(f"{project_id}: applied", MAX_LINE_CHARS),
-                            "summary": safe_text(row.get("changes"), MAX_LINE_CHARS),
-                            "domain_status": "applied",
-                            "latest_review": None,
-                            "review_required": False,
-                            "evidence_refs": evidence_refs_from(row.get("evidence")),
-                            "auto_promote": False,
-                            "wiki_write": False,
-                            "cass_write": False,
-                            "project_apply": False,
-                            "fact_append": False,
-                        }
-                    )
+
+                    # Conflict detection — same proposal_id disagreeing on identity.
+                    if proposal_id in inbox_sigs:
+                        in_pid, in_changes_json = inbox_sigs[proposal_id]
+                        audit_changes_json = canonical_json(row.get("changes", {}))
+                        if in_pid != project_id or in_changes_json != audit_changes_json:
+                            issues.append({
+                                "path": str(audit_path),
+                                "line": line_number,
+                                "issue": f"conflicting identity for proposal_id {proposal_id} between inbox proposal and applied audit",
+                            })
+                            applied_ids.add(proposal_id)  # suppress both copies
+                            continue
+
+                    applied_items.append({
+                        "review_item_id": proposal_id,
+                        "domain": "project",
+                        "source_id": proposal_id,
+                        "source_ref": project_id,
+                        "title": safe_text(f"{project_id}: applied", MAX_LINE_CHARS),
+                        "summary": safe_text(row.get("changes"), MAX_LINE_CHARS),
+                        "domain_status": "applied",
+                        "latest_review": None,
+                        "review_required": False,
+                        "evidence_refs": evidence_refs_from(row.get("evidence")),
+                        "auto_promote": False,
+                        "wiki_write": False,
+                        "cass_write": False,
+                        "project_apply": False,
+                        "fact_append": False,
+                    })
+                    applied_ids.add(proposal_id)
+
+    # Phase 3 — dedup (suppress inbox copies whose proposal_id is in applied)
+    # then combine and sort.  Dedup before limit prevents a tight limit from
+    # truncating the applied entry while its inbox copy survives.
+    items = [item for pid, item in inbox_by_pid.items() if pid not in applied_ids]
+    items.extend(applied_items)
 
     items.sort(key=lambda item: (item["domain_status"], item["review_item_id"]))
     return items[:limit]
